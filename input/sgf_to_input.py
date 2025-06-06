@@ -5,6 +5,7 @@ import re
 from typing import Dict, List, Tuple
 
 from core.show_board import render_board
+from core.liberty import count_liberties
 
 Board = List[List[int]]
 
@@ -112,21 +113,7 @@ def parse_sgf(path: str) -> Tuple[Board, Dict]:
 def convert(path: str) -> Dict:
     board, metadata = parse_sgf(path)
     render_board(board)
-    size = len(board)
-    liberty: List[Tuple[int, int, int]] = []
-    visited: set[Tuple[int, int]] = set()
-    for y in range(size):
-        for x in range(size):
-            color = board[y][x]
-            if color == 0:
-                continue
-            if (x, y) in visited:
-                continue
-            group, libs = _group_and_liberties(board, x, y)
-            for gx, gy in group:
-                visited.add((gx, gy))
-                val = len(libs) if color == 1 else -len(libs)
-                liberty.append((gx + 1, gy + 1, val))
+    liberty: List[Tuple[int, int, int]] = count_liberties(board)
     return {"liberty": liberty, "forbidden": [], "metadata": metadata}
 
 

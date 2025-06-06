@@ -123,6 +123,7 @@ python main.py --mode train --data data/training/ --output data/models/strategie
 - liberty 每個棋子位置(x座標, y座標, 氣)的無序集合，黑棋正數、白棋負數 → 簡單的3維向量
 - forbidden 禁著點位置
 - 隨機洗牌：消除順序偏見
+- 使用 `core.liberty.count_liberties()` 可以在取得棋盤後重新計算各棋子的氣數
 
 ```
 liberty = [
