@@ -1,0 +1,6 @@
+numpy>=1.21.0         # 高階大規模的多維陣列與矩陣運算
+torch>=2.0.0          # 深度學習框架
+transformers>=4.30.0  # Hugging Face 模型支援
+qdrant-client>=1.5.0  # Qdrant 向量數據庫
+flask>=2.3.0          # REST API
+websockets>=11.0      # WebSocket API
