@@ -1,0 +1,18 @@
+# 測試說明
+
+此資料夾存放 pytest 單元測試，其中 `sgf_to_input.py` 定義三個主要測試函式：
+
+1. **`test_liberty`**
+   - 透過 `_create_sgf()` 建立 5×5 的示例棋局。
+   - 逐步呼叫 `sgf_to_input.convert()`，比對每一步回傳的 `liberty` 集合。
+
+2. **`test_forbidden`**
+   - 使用相同的 SGF 檔案，檢查四個步驟皆沒有產生 `forbidden` 位置。
+
+3. **`test_metadata`**
+   - 驗證 `metadata` 內容，包括規則設定、下一手顏色、步驟列表及時間資訊。
+
+若斷言失敗，輔助函式 `_append_report()` 會將差異寫入 `.github/test_report.md`，並附上時間戳記。
+
+執行 `pytest` 即可運行這些測試。
+
