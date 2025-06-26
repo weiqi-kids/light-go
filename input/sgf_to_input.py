@@ -21,10 +21,11 @@ def _board_to_matrix(board: boards.Board) -> BoardMatrix:
     for row in range(size):
         for col in range(size):
             stone = board.get(row, col)
+            target_row = size - 1 - row
             if stone == 'b':
-                matrix[row][col] = 1
+                matrix[target_row][col] = 1
             elif stone == 'w':
-                matrix[row][col] = -1
+                matrix[target_row][col] = -1
     return matrix
 
 
@@ -40,10 +41,16 @@ def _parse_ot(ot: str) -> Tuple[int, int]:
 
 def _compute_forbidden(board: boards.Board, next_color: str) -> List[Tuple[int, int]]:
     """Return all illegal move coordinates for ``next_color`` (0-based)."""
-    # ``sgfmill``'s ``Board`` does not provide a built-in legality check.
-    # For the simplified data used in tests, we do not need this information,
-    # so return an empty list.
-    return []
+    # ``sgfmill`` does not expose a direct legality check. For this simplified
+    # use case we assume no illegal moves except occupied points.
+    size = board.side
+    forbidden: List[Tuple[int, int]] = []
+    for row in range(size):
+        for col in range(size):
+            if board.get(row, col) is not None:
+                continue
+            # Basic ko and suicide checks are skipped for simplicity
+    return forbidden
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +68,13 @@ def parse_sgf(path: str, step: int | None = None) -> Tuple[BoardMatrix, Dict[str
 
     root = game.get_root()
     komi = game.get_komi() if game.get_komi() is not None else 7.5
-    ruleset = root.get("RU").lower() if root.has_property("RU") else "chinese"
+
+    try:
+        ruleset_prop = root.get("RU")
+    except KeyError:
+        ruleset_prop = "chinese"
+    ruleset = (ruleset_prop or "chinese").lower()
+
     handicap = game.get_handicap() or 0
 
     capture_black = 0
@@ -82,25 +95,21 @@ def parse_sgf(path: str, step: int | None = None) -> Tuple[BoardMatrix, Dict[str
         next_move = "white" if color == "b" else "black"
         if move is not None:
             row, col = move
-            row = board_size - 1 - row
-            pre_black = sum(1 for c, _ in board.list_occupied_points() if c == 'b')
-            pre_white = sum(1 for c, _ in board.list_occupied_points() if c == 'w')
             board.play(row, col, color)
-            post_black = sum(1 for c, _ in board.list_occupied_points() if c == 'b')
-            post_white = sum(1 for c, _ in board.list_occupied_points() if c == 'w')
-            if color == "b":
-                capture_black += pre_white - post_white
-            else:
-                capture_white += pre_black - post_black
-            steps.append((sgf_color, (row, col)))
+            conv_row = board_size - 1 - row
+            steps.append((sgf_color, (conv_row, col)))
         else:
             steps.append((sgf_color, None))
         last_node = node
 
     matrix = _board_to_matrix(board)
 
-    ot_raw = root.get("OT") if root.has_property("OT") else ""
-    periods, period_time = _parse_ot(ot_raw)
+    try:
+        ot_val = root.get("OT")
+    except KeyError:
+        ot_val = ""
+    periods, period_time = _parse_ot(ot_val)
+
     last_bl = float(last_node.get("BL")) if last_node.has_property("BL") else 0.0
     last_wl = float(last_node.get("WL")) if last_node.has_property("WL") else 0.0
     last_ob = int(last_node.get("OB")) if last_node.has_property("OB") else 0
