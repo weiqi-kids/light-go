@@ -16,8 +16,9 @@ class AutoLearner:
         self.manager = manager
 
     @staticmethod
-    def _game_stats(board):
-        libs = count_liberties(board)
+    def _game_stats(matrix):
+        """Compute liberty statistics from a board matrix."""
+        libs = count_liberties(matrix)
         black_libs = [abs(l) for _, _, l in libs if l > 0]
         white_libs = [abs(l) for _, _, l in libs if l < 0]
         return {
@@ -39,8 +40,8 @@ class AutoLearner:
         for fname in os.listdir(data_path):
             if not fname.endswith(".sgf"):
                 continue
-            board, _ = parse_sgf(os.path.join(data_path, fname))
-            gs = self._game_stats(board)
+            matrix, _, _ = parse_sgf(os.path.join(data_path, fname))
+            gs = self._game_stats(matrix)
             stats["games"] += 1
             stats["total_black_stones"] += gs["black_stones"]
             stats["total_white_stones"] += gs["white_stones"]
