@@ -4,8 +4,10 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Tuple
 
+import os
 from sgfmill import sgf, boards
-from core.liberty import count_liberties
+
+from core.liberty import count_liberties  # backwards compatibility
 
 BoardMatrix = List[List[int]]
 
@@ -13,6 +15,30 @@ BoardMatrix = List[List[int]]
 # ---------------------------------------------------------------------------
 # Utility helpers
 # ---------------------------------------------------------------------------
+
+def _count_liberties_board(board: boards.Board) -> List[Tuple[int, int, int]]:
+    """Count liberties for all stones on ``board`` using sgfmill."""
+    size = board.side
+    visited = set()
+    result: List[Tuple[int, int, int]] = []
+    for row in range(size):
+        for col in range(size):
+            color = board.get(row, col)
+            if color is None or (row, col) in visited:
+                continue
+            group = board._make_group(row, col, color)
+            libs = set()
+            for r, c in group.points:
+                for nr, nc in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
+                    if 0 <= nr < size and 0 <= nc < size:
+                        if board.get(nr, nc) is None:
+                            libs.add((nr, nc))
+            for r, c in group.points:
+                visited.add((r, c))
+                conv_row = size - 1 - r
+                val = len(libs) if color == "b" else -len(libs)
+                result.append((c + 1, conv_row + 1, val))
+    return result
 
 def _board_to_matrix(board: boards.Board) -> BoardMatrix:
     """Convert ``sgfmill`` board to a matrix of ``int`` values."""
@@ -41,15 +67,19 @@ def _parse_ot(ot: str) -> Tuple[int, int]:
 
 def _compute_forbidden(board: boards.Board, next_color: str) -> List[Tuple[int, int]]:
     """Return all illegal move coordinates for ``next_color`` (0-based)."""
-    # ``sgfmill`` does not expose a direct legality check. For this simplified
-    # use case we assume no illegal moves except occupied points.
     size = board.side
+    colour = "b" if next_color == "black" else "w"
     forbidden: List[Tuple[int, int]] = []
     for row in range(size):
         for col in range(size):
             if board.get(row, col) is not None:
                 continue
-            # Basic ko and suicide checks are skipped for simplicity
+            test = board.copy()
+            test.play(row, col, colour)
+            group = test._make_group(row, col, colour)
+            if group.is_surrounded:
+                conv_row = size - 1 - row
+                forbidden.append((col, conv_row))
     return forbidden
 
 
@@ -57,10 +87,16 @@ def _compute_forbidden(board: boards.Board, next_color: str) -> List[Tuple[int, 
 # Core SGF parsing logic
 # ---------------------------------------------------------------------------
 
-def parse_sgf(path: str, step: int | None = None) -> Tuple[BoardMatrix, Dict[str, Any], boards.Board]:
-    """Parse ``path`` up to ``step`` and return the board matrix and metadata."""
-    with open(path, "rb") as f:
-        sgf_bytes = f.read()
+def parse_sgf(src: str, step: int | None = None, *, from_string: bool = False) -> Tuple[BoardMatrix, Dict[str, Any], boards.Board]:
+    """Parse SGF ``src`` up to ``step`` and return the board matrix and metadata.
+
+    ``src`` can be a file path or an SGF string when ``from_string`` is ``True``.
+    """
+    if from_string or not os.path.exists(src):
+        sgf_bytes = src.encode()
+    else:
+        with open(src, "rb") as f:
+            sgf_bytes = f.read()
 
     game = sgf.Sgf_game.from_bytes(sgf_bytes)
     board_size = game.get_size()
@@ -141,11 +177,14 @@ def parse_sgf(path: str, step: int | None = None) -> Tuple[BoardMatrix, Dict[str
     return matrix, metadata, board
 
 
-def convert(path: str, step: int | None = None) -> Dict[str, Any]:
-    """High level convenience wrapper returning the structured data."""
-    matrix, metadata, board = parse_sgf(path, step)
+def convert(src: str, step: int | None = None, *, from_string: bool = False) -> Dict[str, Any]:
+    """High level convenience wrapper returning the structured data.
 
-    liberties_1b = count_liberties(matrix)
+    ``src`` can be a file path or SGF text when ``from_string`` is ``True``.
+    """
+    matrix, metadata, board = parse_sgf(src, step, from_string=from_string)
+
+    liberties_1b = _count_liberties_board(board)
     liberty = [(r - 1, c - 1, v) for r, c, v in liberties_1b]
 
     forbidden = _compute_forbidden(board, metadata["next_move"])
@@ -153,4 +192,9 @@ def convert(path: str, step: int | None = None) -> Dict[str, Any]:
     return {"liberty": liberty, "forbidden": forbidden, "metadata": metadata}
 
 
-__all__ = ["parse_sgf", "convert"]
+def convert_from_string(sgf_text: str, step: int | None = None) -> Dict[str, Any]:
+    """Convenience wrapper for converting directly from SGF text."""
+    return convert(sgf_text, step=step, from_string=True)
+
+
+__all__ = ["parse_sgf", "convert", "convert_from_string"]
