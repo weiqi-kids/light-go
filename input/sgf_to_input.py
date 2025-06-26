@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Tuple
 
+import os
 from sgfmill import sgf, boards
 from core.liberty import count_liberties
 
@@ -57,10 +58,16 @@ def _compute_forbidden(board: boards.Board, next_color: str) -> List[Tuple[int, 
 # Core SGF parsing logic
 # ---------------------------------------------------------------------------
 
-def parse_sgf(path: str, step: int | None = None) -> Tuple[BoardMatrix, Dict[str, Any], boards.Board]:
-    """Parse ``path`` up to ``step`` and return the board matrix and metadata."""
-    with open(path, "rb") as f:
-        sgf_bytes = f.read()
+def parse_sgf(src: str, step: int | None = None, *, from_string: bool = False) -> Tuple[BoardMatrix, Dict[str, Any], boards.Board]:
+    """Parse SGF ``src`` up to ``step`` and return the board matrix and metadata.
+
+    ``src`` can be a file path or an SGF string when ``from_string`` is ``True``.
+    """
+    if from_string or not os.path.exists(src):
+        sgf_bytes = src.encode()
+    else:
+        with open(src, "rb") as f:
+            sgf_bytes = f.read()
 
     game = sgf.Sgf_game.from_bytes(sgf_bytes)
     board_size = game.get_size()
@@ -141,9 +148,12 @@ def parse_sgf(path: str, step: int | None = None) -> Tuple[BoardMatrix, Dict[str
     return matrix, metadata, board
 
 
-def convert(path: str, step: int | None = None) -> Dict[str, Any]:
-    """High level convenience wrapper returning the structured data."""
-    matrix, metadata, board = parse_sgf(path, step)
+def convert(src: str, step: int | None = None, *, from_string: bool = False) -> Dict[str, Any]:
+    """High level convenience wrapper returning the structured data.
+
+    ``src`` can be a file path or SGF text when ``from_string`` is ``True``.
+    """
+    matrix, metadata, board = parse_sgf(src, step, from_string=from_string)
 
     liberties_1b = count_liberties(matrix)
     liberty = [(r - 1, c - 1, v) for r, c, v in liberties_1b]
@@ -153,4 +163,9 @@ def convert(path: str, step: int | None = None) -> Dict[str, Any]:
     return {"liberty": liberty, "forbidden": forbidden, "metadata": metadata}
 
 
-__all__ = ["parse_sgf", "convert"]
+def convert_from_string(sgf_text: str, step: int | None = None) -> Dict[str, Any]:
+    """Convenience wrapper for converting directly from SGF text."""
+    return convert(sgf_text, step=step, from_string=True)
+
+
+__all__ = ["parse_sgf", "convert", "convert_from_string"]

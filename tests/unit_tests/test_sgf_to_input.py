@@ -22,3 +22,11 @@ def test_basic_sgf(tmp_path: pathlib.Path):
     assert (0, 0, 2) in liberty  # corner stone liberties (0-based)
     assert len(liberty) == 4
 
+
+def test_convert_from_string():
+    sgf_content = "(;FF[4]SZ[5];B[aa];W[bb];B[cc];W[dd])"
+    result = sgf_to_input.convert_from_string(sgf_content, step=4)
+
+    assert set(result.keys()) == {"liberty", "forbidden", "metadata"}
+    assert result["metadata"]["next_move"] == "black"
+
