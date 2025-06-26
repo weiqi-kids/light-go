@@ -1,38 +1,45 @@
 """Simple SGF parser used for extracting basic game information and board matrix."""
 from __future__ import annotations
 
-import re
 from typing import Any, Dict, List, Tuple
+
+from sgfmill import sgf, sgf_properties
 
 Board = List[List[int]]
 
 
 def parse_sgf(sgf_file_path: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     """Parse an SGF file and return game info and list of moves."""
-    with open(sgf_file_path, "r", encoding="utf-8") as f:
-        sgf_content = f.read().strip()
+    with open(sgf_file_path, "rb") as f:
+        sgf_bytes = f.read()
 
-    game_info: Dict[str, Any] = {}
+    sgf_game = sgf.Sgf_game.from_bytes(sgf_bytes)
+    root = sgf_game.get_root()
 
-    size_match = re.search(r"SZ\[(\d+)\]", sgf_content)
-    game_info["board_size"] = int(size_match.group(1)) if size_match else 19
-
-    pb_match = re.search(r"PB\[([^\]]+)\]", sgf_content)
-    game_info["black_player"] = pb_match.group(1) if pb_match else "Unknown"
-
-    pw_match = re.search(r"PW\[([^\]]+)\]", sgf_content)
-    game_info["white_player"] = pw_match.group(1) if pw_match else "Unknown"
-
-    re_match = re.search(r"RE\[([^\]]+)\]", sgf_content)
-    game_info["result"] = re_match.group(1) if re_match else "Unknown"
+    size = sgf_game.get_size()
+    game_info: Dict[str, Any] = {
+        "board_size": size,
+        "black_player": root.get("PB") if root.has_property("PB") else "Unknown",
+        "white_player": root.get("PW") if root.has_property("PW") else "Unknown",
+        "result": root.get("RE") if root.has_property("RE") else "Unknown",
+    }
 
     moves: List[Dict[str, Any]] = []
-    move_pattern = r"([BW])\[([a-z]{2})\]"
-    for color, pos in re.findall(move_pattern, sgf_content):
-        if pos:
-            x = ord(pos[0]) - ord("a")
-            y = ord(pos[1]) - ord("a")
-            moves.append({"color": color, "x": x, "y": y, "sgf_pos": pos})
+    for node in sgf_game.get_main_sequence()[1:]:
+        color, move = node.get_move()
+        if color is None:
+            continue
+        color = color.upper()
+        if move is not None:
+            row, col = move
+            sgf_pos = (
+                sgf_properties.serialise_go_point(move, size).decode()
+            )
+            y = size - 1 - row
+            x = col
+            moves.append({"color": color, "x": x, "y": y, "sgf_pos": sgf_pos})
+        else:
+            moves.append({"color": color, "x": None, "y": None, "sgf_pos": ""})
 
     return game_info, moves
 
@@ -45,6 +52,8 @@ def sgf_to_input_matrix(sgf_file_path: str) -> Tuple[Board, Dict[str, Any], List
 
     for move in moves:
         x, y = move["x"], move["y"]
+        if x is None or y is None:
+            continue
         board[y][x] = 1 if move["color"] == "B" else -1
 
     return board, game_info, moves

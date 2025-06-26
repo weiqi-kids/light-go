@@ -68,11 +68,13 @@ def parse_sgf(path: str, step: int | None = None) -> Tuple[BoardMatrix, Dict[str
 
     root = game.get_root()
     komi = game.get_komi() if game.get_komi() is not None else 7.5
+
     try:
         ruleset_prop = root.get("RU")
     except KeyError:
         ruleset_prop = "chinese"
     ruleset = (ruleset_prop or "chinese").lower()
+
     handicap = game.get_handicap() or 0
 
     capture_black = 0
@@ -107,6 +109,7 @@ def parse_sgf(path: str, step: int | None = None) -> Tuple[BoardMatrix, Dict[str
     except KeyError:
         ot_val = ""
     periods, period_time = _parse_ot(ot_val)
+
     last_bl = float(last_node.get("BL")) if last_node.has_property("BL") else 0.0
     last_wl = float(last_node.get("WL")) if last_node.has_property("WL") else 0.0
     last_ob = int(last_node.get("OB")) if last_node.has_property("OB") else 0
