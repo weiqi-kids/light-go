@@ -1,0 +1,10 @@
+# 測試說明
+
+此資料夾存放 pytest 單元測試，其中 `sgf_to_input.py` 提供了三個測試函式：
+
+- `test_liberty`：檢查 `sgf_to_input.convert` 依序載入 SGF 檔案時，回傳的每一步 `liberty` 是否符合預期。
+- `test_forbidden`：確認同樣的 SGF 檔案在各步驟下沒有產生禁著點。
+- `test_metadata`：逐步比對回傳的 `metadata`，例如下一手顏色、規則與時間資訊。
+
+測試會產生 `.github/test_report.md`，紀錄失敗案例與時間戳記。
+
