@@ -1,0 +1,21 @@
+name: KataGo to Input Tests
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - name: Install pip and pytest
+        run: |
+          python -m pip install --upgrade pip pytest
+      - name: Install dependencies from requirements.txt
+        run: pip install -r requirements.txt
+      - name: Run KataGo to Input unit tests
+        run: pytest tests/unit_tests/katago_to_input.py
