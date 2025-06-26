@@ -1,121 +1,146 @@
-"""Convert SGF files to the internal liberty/forbidden/metadata format."""
+"""SGF to liberty/forbidden/metadata converter using sgfmill."""
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
-from core.show_board import render_board
+from sgfmill import sgf, boards
 from core.liberty import count_liberties
 
-Board = List[List[int]]
+BoardMatrix = List[List[int]]
 
 
-def _coord_to_xy(coord: str) -> Tuple[int, int]:
-    """Convert SGF coordinate like 'aa' to (x, y) 0-based."""
-    if coord == "" or coord is None:
-        return -1, -1  # pass move
-    x = ord(coord[0]) - ord("a")
-    y = ord(coord[1]) - ord("a")
-    return x, y
+# ---------------------------------------------------------------------------
+# Utility helpers
+# ---------------------------------------------------------------------------
+
+def _board_to_matrix(board: boards.Board) -> BoardMatrix:
+    """Convert ``sgfmill`` board to a matrix of ``int`` values."""
+    size = board.side
+    matrix: BoardMatrix = [[0 for _ in range(size)] for _ in range(size)]
+    for row in range(size):
+        for col in range(size):
+            stone = board.get(row, col)
+            if stone == 'b':
+                matrix[row][col] = 1
+            elif stone == 'w':
+                matrix[row][col] = -1
+    return matrix
 
 
-def _neighbors(x: int, y: int, size: int):
-    if x > 0:
-        yield x - 1, y
-    if x < size - 1:
-        yield x + 1, y
-    if y > 0:
-        yield x, y - 1
-    if y < size - 1:
-        yield x, y + 1
+def _parse_ot(ot: str) -> Tuple[int, int]:
+    """Parse byo-yomi description like '5x30' and return (periods, period_time)."""
+    if not ot:
+        return 0, 0
+    m = re.search(r"(\d+)\s*x\s*(\d+)", ot)
+    if not m:
+        return 0, 0
+    return int(m.group(1)), int(m.group(2))
 
 
-def _group_and_liberties(board: Board, x: int, y: int) -> Tuple[set[Tuple[int, int]], set[Tuple[int, int]]]:
-    color = board[y][x]
-    size = len(board)
-    group = {(x, y)}
-    liberties: set[Tuple[int, int]] = set()
-    stack = [(x, y)]
-    while stack:
-        cx, cy = stack.pop()
-        for nx, ny in _neighbors(cx, cy, size):
-            val = board[ny][nx]
-            if val == 0:
-                liberties.add((nx, ny))
-            elif val == color and (nx, ny) not in group:
-                group.add((nx, ny))
-                stack.append((nx, ny))
-    return group, liberties
+def _compute_forbidden(board: boards.Board, next_color: str) -> List[Tuple[int, int]]:
+    """Return all illegal move coordinates for ``next_color`` (0-based)."""
+    sgf_color = 'b' if next_color == 'black' else 'w'
+    size = board.side
+    forbidden: List[Tuple[int, int]] = []
+    for row in range(size):
+        for col in range(size):
+            if board.get(row, col) is None:
+                if not board.is_legal(row, col, sgf_color):
+                    forbidden.append((row, col))
+    return forbidden
 
 
-def _place_stone(board: Board, x: int, y: int, color: int) -> int:
-    """Place a stone and return number of opponent captures."""
-    size = len(board)
-    board[y][x] = color
-    captured = 0
-    for nx, ny in _neighbors(x, y, size):
-        if board[ny][nx] == -color:
-            g, libs = _group_and_liberties(board, nx, ny)
-            if not libs:
-                for gx, gy in g:
-                    board[gy][gx] = 0
-                captured += len(g)
-    g, libs = _group_and_liberties(board, x, y)
-    if not libs:
-        for gx, gy in g:
-            board[gy][gx] = 0
-        # suicide stones count for opponent
-        captured -= len(g)
-    return captured
+# ---------------------------------------------------------------------------
+# Core SGF parsing logic
+# ---------------------------------------------------------------------------
 
+def parse_sgf(path: str, step: int | None = None) -> Tuple[BoardMatrix, Dict[str, Any], boards.Board]:
+    """Parse ``path`` up to ``step`` and return the board matrix and metadata."""
+    with open(path, "rb") as f:
+        sgf_bytes = f.read()
 
-def parse_sgf(path: str) -> Tuple[Board, Dict]:
-    text = open(path, "r", encoding="utf-8").read()
-    size_match = re.search(r"SZ\[(\d+)\]", text)
-    size = int(size_match.group(1)) if size_match else 19
-    komi_match = re.search(r"KM\[([^\]]+)\]", text)
-    komi = float(komi_match.group(1)) if komi_match else 0.0
-    rules_match = re.search(r"RU\[([^\]]+)\]", text)
-    rules = rules_match.group(1) if rules_match else "chinese"
+    game = sgf.Sgf_game.from_bytes(sgf_bytes)
+    board_size = game.get_size()
+    board = boards.Board(board_size)
 
-    board = [[0 for _ in range(size)] for _ in range(size)]
+    root = game.get_root()
+    komi = game.get_komi() if game.get_komi() is not None else 7.5
+    ruleset = (root.get("RU") or "chinese").lower()
+    handicap = game.get_handicap() or 0
+
     capture_black = 0
     capture_white = 0
-    moves = re.findall(r";([BW])\[([^\]]*)\]", text)
-    next_color = "black"
-    for color_char, coord in moves:
-        x, y = _coord_to_xy(coord)
-        if x == -1:
-            # pass
-            next_color = "white" if color_char == "B" else "black"
+    next_move = "black"
+    steps: List[Tuple[str, Tuple[int, int] | None]] = []
+
+    nodes = game.get_main_sequence()[1:]
+    if step is not None:
+        nodes = nodes[: step]
+
+    last_node = root
+    for node in nodes:
+        color, move = node.get_move()
+        if color is None:
             continue
-        color = 1 if color_char == "B" else -1
-        captured = _place_stone(board, x, y, color)
-        if color == 1:
-            capture_black += captured
-            next_color = "white"
+        sgf_color = "black" if color == "b" else "white"
+        next_move = "white" if color == "b" else "black"
+        if move is not None:
+            row, col = move
+            captured = board.play(row, col, color)
+            if color == "b":
+                capture_black += len(captured)
+            else:
+                capture_white += len(captured)
+            steps.append((sgf_color, (row, col)))
         else:
-            capture_white += captured
-            next_color = "black"
+            steps.append((sgf_color, None))
+        last_node = node
+
+    matrix = _board_to_matrix(board)
+
+    periods, period_time = _parse_ot(root.get("OT", ""))
+    last_bl = float(last_node.get("BL")) if last_node.get("BL") is not None else 0.0
+    last_wl = float(last_node.get("WL")) if last_node.get("WL") is not None else 0.0
+    last_ob = int(last_node.get("OB")) if last_node.get("OB") is not None else 0
+    last_ow = int(last_node.get("OW")) if last_node.get("OW") is not None else 0
+
     metadata = {
         "rules": {
-            "ruleset": rules,
+            "ruleset": ruleset,
             "komi": komi,
-            "board_size": size,
-            "handicap": 0,
+            "board_size": board_size,
+            "handicap": handicap,
         },
         "capture": {"black": capture_black, "white": capture_white},
-        "next_move": next_color,
+        "next_move": next_move,
+        "step": steps,
+        "time_control": {
+            "main_time_seconds": float(root.get("TM")) if root.get("TM") else 0.0,
+            "byo_yomi": {
+                "period_time_seconds": period_time,
+                "periods": periods,
+            },
+        },
+        "time": [
+            {"player": "black", "main_time_seconds": last_bl, "periods": last_ob},
+            {"player": "white", "main_time_seconds": last_wl, "periods": last_ow},
+        ],
     }
-    return board, metadata
+
+    return matrix, metadata, board
 
 
-def convert(path: str) -> Dict:
-    board, metadata = parse_sgf(path)
-    render_board(board)
-    liberty: List[Tuple[int, int, int]] = count_liberties(board)
-    return {"liberty": liberty, "forbidden": [], "metadata": metadata}
+def convert(path: str, step: int | None = None) -> Dict[str, Any]:
+    """High level convenience wrapper returning the structured data."""
+    matrix, metadata, board = parse_sgf(path, step)
+
+    liberties_1b = count_liberties(matrix)
+    liberty = [(r - 1, c - 1, v) for r, c, v in liberties_1b]
+
+    forbidden = _compute_forbidden(board, metadata["next_move"])
+
+    return {"liberty": liberty, "forbidden": forbidden, "metadata": metadata}
 
 
-__all__ = ["convert", "parse_sgf"]
-
+__all__ = ["parse_sgf", "convert"]

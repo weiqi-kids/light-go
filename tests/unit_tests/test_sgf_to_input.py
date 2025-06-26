@@ -11,7 +11,7 @@ def test_basic_sgf(tmp_path: pathlib.Path):
     sgf_file = tmp_path / "game.sgf"
     sgf_file.write_text(sgf_content)
 
-    result = sgf_to_input.convert(str(sgf_file))
+    result = sgf_to_input.convert(str(sgf_file), step=4)
 
     assert set(result.keys()) == {"liberty", "forbidden", "metadata"}
     metadata = result["metadata"]
@@ -19,6 +19,6 @@ def test_basic_sgf(tmp_path: pathlib.Path):
     assert metadata["next_move"] == "black"
 
     liberty = result["liberty"]
-    assert (1, 1, 2) in liberty  # corner stone liberties
+    assert (0, 0, 2) in liberty  # corner stone liberties (0-based)
     assert len(liberty) == 4
 

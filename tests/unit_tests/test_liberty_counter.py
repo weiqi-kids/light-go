@@ -12,8 +12,8 @@ def test_count_liberties(tmp_path: pathlib.Path):
     sgf_file = tmp_path / "game.sgf"
     sgf_file.write_text(sgf_content)
 
-    board, _ = sgf_to_input.parse_sgf(str(sgf_file))
-    result = liberty.count_liberties(board)
+    matrix, _, _ = sgf_to_input.parse_sgf(str(sgf_file), step=4)
+    result = liberty.count_liberties(matrix)
 
     assert (1, 1, 2) in result
     assert len(result) == 4
