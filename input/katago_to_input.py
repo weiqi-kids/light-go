@@ -11,24 +11,25 @@ def katago_to_coords(move_str, board_size_y):
     try:
         x = SGF_CHARS.find(col_char)
         y = board_size_y - int(row_str)
-        if x == -1:
+        if x == -1 or not (0 <= x < board_size_y and 0 <= y < board_size_y):
             return None
         return (x, y)
     except (ValueError, IndexError):
         return None
 
-all_processed_moves = []
-
-if len(sys.argv) > 1:
-    filepath = sys.argv[1]
+def process_katago_file(filepath):
+    all_processed_moves = []
     try:
         with open(filepath, 'r') as f:
             for line in f:
                 line = line.strip()
                 if not line:
                     continue
-
-                katago_move = json.loads(line)
+                try:
+                    katago_move = json.loads(line)
+                except json.JSONDecodeError:
+                    # Skip lines that are not valid JSON
+                    continue
 
                 board = katago_move.get('board', [])
                 liberties = katago_move.get('liberties', [])
@@ -40,7 +41,7 @@ if len(sys.argv) > 1:
                     for i, stone in enumerate(board):
                         if stone != 'E':
                             x = i % board_x
-                            y = i // board_x
+                            y = board_y - 1 - (i // board_x) # Apply y-inversion here
                             lib_count = liberties[i]
                             if stone == 'W':
                                 lib_count = -lib_count
@@ -64,8 +65,8 @@ if len(sys.argv) > 1:
                 }
 
                 metadata['capture'] = {
-                    'black': katago_move.get('whiteCaptures', 0),
-                    'white': katago_move.get('blackCaptures', 0)
+                    'black': katago_move.get('blackCaptures', 0),
+                    'white': katago_move.get('whiteCaptures', 0)
                 }
 
                 metadata['next_move'] = 'black' if katago_move.get('pla') == 'B' else 'white'
@@ -102,7 +103,12 @@ if len(sys.argv) > 1:
                 }
                 all_processed_moves.append(processed_move)
 
-    except (IOError, IndexError, json.JSONDecodeError):
+    except IOError:
         pass
+    return all_processed_moves
 
-print(json.dumps(all_processed_moves))
+if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        filepath = sys.argv[1]
+        result = process_katago_file(filepath)
+        print(json.dumps(result))
