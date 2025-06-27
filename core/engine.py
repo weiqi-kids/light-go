@@ -140,6 +140,11 @@ class Engine:
         converted = self._convert_directory(data_dir)
         return [model.predict(sample) for sample in converted]
 
+    def load_strategy(self, name: str) -> Any:
+        """Load strategy ``name`` via :class:`StrategyManager`."""
+
+        return self.strategy_manager.load_strategy(name)
+
     # ------------------------------------------------------------------
     def decide_move(self, board: List[List[int]], color: str) -> tuple[int, int] | None:
         """Return a very naive move decision for ``board``.

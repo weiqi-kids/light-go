@@ -86,3 +86,19 @@ def test_exception_logged(tmp_path):
         cli_main.main()
         log_exc.assert_called()
         assert 'Unhandled error' in log_exc.call_args.args[0]
+
+
+def test_strategy_argument_loads_strategy(tmp_path):
+    argv = [
+        'main.py',
+        '--mode', 'train',
+        '--data', 'dir',
+        '--output', str(tmp_path),
+        '--strategy', 'strat1'
+    ]
+    engine_mock = MagicMock()
+    engine_mock.strategy_manager.strategies_path = str(tmp_path)
+    engine_mock.train.return_value = 's1'
+    with patch.object(sys, 'argv', argv), patch('cli_main.Engine', return_value=engine_mock):
+        cli_main.main()
+        engine_mock.load_strategy.assert_called_with('strat1')
