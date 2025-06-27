@@ -23,11 +23,13 @@ except Exception:  # pragma: no cover - fallback placeholder
             return None
 
         def save_pretrained(self, path: str) -> None:
+            """Write a tiny placeholder checkpoint to ``path``."""
             with open(path, "wb") as f:
                 f.write(b"model")
 
         @classmethod
         def from_pretrained(cls, path: str) -> "GoAIModel":
+            """Load a dummy model from ``path`` (contents ignored)."""
             return cls()
 
 
@@ -43,6 +45,7 @@ class Engine:
     """
 
     def __init__(self, model_dir: str) -> None:
+        """Create an engine with models stored under ``model_dir``."""
         self.model_dir = model_dir
         os.makedirs(self.model_dir, exist_ok=True)
         self.strategy_manager = StrategyManager(os.path.join(model_dir, "strategies"))
@@ -137,5 +140,35 @@ class Engine:
         converted = self._convert_directory(data_dir)
         return [model.predict(sample) for sample in converted]
 
+    # ------------------------------------------------------------------
+    def decide_move(self, board: List[List[int]], color: str) -> tuple[int, int] | None:
+        """Return a very naive move decision for ``board``.
 
-__all__ = ["Engine"]
+        Parameters
+        ----------
+        board:
+            A matrix of integers where ``0`` denotes an empty position.
+        color:
+            Unused placeholder for future logic.
+
+        Returns
+        -------
+        tuple[int, int] | None
+            Coordinates of the first empty point, or ``None`` if the board is
+            full.
+        """
+
+        for y, row in enumerate(board):
+            for x, val in enumerate(row):
+                if val == 0:
+                    return (x, y)
+        return None
+
+
+__all__ = ["Engine", "predict"]
+
+
+def predict(input_data: Any) -> Any:
+    """Placeholder prediction helper used by demo APIs."""
+
+    return None

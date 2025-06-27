@@ -70,6 +70,7 @@ def _run_play(engine: Engine, sgf_path: str) -> tuple[int, int] | None:
 
 
 def main() -> None:
+    """Entry point for the ``light-go`` command line tool."""
     parser = argparse.ArgumentParser(description="Light-Go")
     parser.add_argument("--mode", choices=["train", "evaluate", "play"], required=True)
     parser.add_argument("--data", help="Input data directory or SGF file")

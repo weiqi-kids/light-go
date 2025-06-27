@@ -20,4 +20,4 @@ jobs:
         run: |
           python -m pip install --upgrade pip pytest
       - name: Run gtp_interface unit tests
-        run: pytest tests/unit_tests/gtp_interface.py
+        run: pytest tests/unit_tests/test_gtp_interface.py

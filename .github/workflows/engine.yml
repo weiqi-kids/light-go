@@ -21,4 +21,4 @@ jobs:
         run: |
           python -m pip install --upgrade pip pytest
       - name: Run Engine unit tests
-        run: pytest tests/unit_tests/engine.py
+        run: pytest tests/unit_tests/test_engine.py

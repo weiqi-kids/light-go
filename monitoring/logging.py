@@ -16,6 +16,7 @@ class PerformanceLogQuery:
     """
 
     def __init__(self) -> None:
+        """Create an empty query object."""
         self.logs: List[Dict[str, Any]] = []
 
     # ------------------------------------------------------------------
@@ -103,6 +104,7 @@ class PerformanceLogQuery:
     # ------------------------------------------------------------------
     @staticmethod
     def _convert_types(row: Dict[str, str]) -> Dict[str, Any]:
+        """Attempt to convert CSV values to numeric types."""
         out: Dict[str, Any] = {}
         for key, value in row.items():
             try:

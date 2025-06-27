@@ -32,14 +32,17 @@ class ConnectionManager:
     """Manage active WebSocket connections."""
 
     def __init__(self) -> None:
+        """Create a new manager with an empty connection set."""
         self.active_connections: Set[WebSocket] = set()
 
     async def connect(self, websocket: WebSocket) -> None:
+        """Accept ``websocket`` and track the connection."""
         await websocket.accept()
         self.active_connections.add(websocket)
         logger.info("Client connected. Active: %d", len(self.active_connections))
 
     def disconnect(self, websocket: WebSocket) -> None:
+        """Remove ``websocket`` from the active set."""
         self.active_connections.discard(websocket)
         logger.info(
             "Client disconnected. Active: %d", len(self.active_connections)

@@ -1,3 +1,5 @@
+"""Gradio-based monitoring dashboard exposed via FastAPI."""
+
 from __future__ import annotations
 
 import json
@@ -14,12 +16,14 @@ fastapi_app = FastAPI(title="Light-Go Dashboard")
 
 @fastapi_app.get("/monitoring/health")
 async def monitoring_health():
+    """Return JSON status collected from the health dashboard."""
     dash = health_check.build_default_dashboard()
     return await dash.api_status()
 
 
 @fastapi_app.get("/monitoring/performance")
 async def monitoring_performance():
+    """Measure basic system performance and return collected stats."""
     with performance.PerformanceMonitor() as mon:
         pass
     return mon.stats
@@ -27,6 +31,7 @@ async def monitoring_performance():
 
 @fastapi_app.get("/monitoring/logging")
 def monitoring_logging(file: str = "performance.json"):
+    """Return parsed performance log entries from ``file``."""
     q = log_utils.PerformanceLogQuery()
     try:
         q.load_logs(file)
@@ -41,6 +46,7 @@ _client = TestClient(fastapi_app)
 
 
 def _fetch(path: str, **params):
+    """Return JSON payload from ``path`` using the internal test client."""
     resp = _client.get(path, params=params)
     if resp.status_code == 200:
         return resp.json()
@@ -48,6 +54,7 @@ def _fetch(path: str, **params):
 
 
 def refresh_status(file: str):
+    """Fetch health, performance and log data for ``file``."""
     health = _fetch("/monitoring/health")
     perf = _fetch("/monitoring/performance")
     logs = _fetch("/monitoring/logging", file=file)
@@ -55,6 +62,7 @@ def refresh_status(file: str):
 
 
 def build_ui() -> gr.Blocks:
+    """Construct and return the Gradio dashboard UI."""
     with gr.Blocks() as demo:
         gr.Markdown("# Light-Go\n歡迎使用 Light-Go")
         with gr.Row():

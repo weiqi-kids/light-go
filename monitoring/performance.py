@@ -36,6 +36,7 @@ class PerformanceMonitor:
     """
 
     def __init__(self, output: Optional[str] = None) -> None:
+        """Initialize the monitor; optional ``output`` path saves results."""
         self.output = output
         self.stats: Dict[str, Any] = {}
         self._process = psutil.Process(os.getpid())
@@ -66,6 +67,7 @@ class PerformanceMonitor:
 
     # ------------------------------------------------------------------
     def __enter__(self) -> "PerformanceMonitor":
+        """Start recording performance metrics."""
         self._start_time = time.time()
         self._start_cpu = self._process.cpu_times()
         self._start_mem = self._process.memory_info().rss
@@ -74,6 +76,7 @@ class PerformanceMonitor:
 
     # ------------------------------------------------------------------
     def __exit__(self, exc_type, exc, tb) -> bool:
+        """Stop monitoring and optionally persist the results."""
         end_time = time.time()
         end_cpu = self._process.cpu_times()
         end_mem = self._process.memory_info().rss
@@ -162,12 +165,14 @@ def monitor_performance(func=None, *, output: Optional[str] = None):
 # Example usage when run as a script
 
 def _example_task():
+    """Run a tiny workload used in the module self-test."""
     total = sum(range(10000))
     return total
 
 
 @monitor_performance()
 def _decorated_example():
+    """Sleep briefly to demonstrate the decorator."""
     time.sleep(0.05)
 
 

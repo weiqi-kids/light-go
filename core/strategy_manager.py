@@ -34,6 +34,7 @@ class StrategyManager:
     """Manage registration and evaluation of strategies."""
 
     def __init__(self, strategies_path: str) -> None:
+        """Create a manager storing strategies under ``strategies_path``."""
         self.strategies_path = strategies_path
         os.makedirs(self.strategies_path, exist_ok=True)
         self._strategies: Dict[str, StrategyProtocol | Any] = {}

@@ -34,6 +34,7 @@ class GTPServer:
     """Minimal stateful GTP server."""
 
     def __init__(self, host: str = HOST, port: int = PORT) -> None:
+        """Initialize the server listening on ``host`` and ``port``."""
         self.host = host
         self.port = port
         self.board_size = 19
@@ -149,6 +150,7 @@ class GTPServer:
 
     @staticmethod
     def _format_response(prefix: str, ident: Optional[str], msg: str) -> str:
+        """Return a properly formatted GTP response line."""
         parts = [prefix]
         if ident:
             parts.append(ident)
