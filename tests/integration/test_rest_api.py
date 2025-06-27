@@ -10,8 +10,7 @@ def test_health_and_predict_endpoints():
     assert resp.status_code == 200
     assert resp.json()['status'] == 'ok'
 
-    # mock model predict or use default which returns None
-    payload = {'input': {}}
+    payload = {'input': {'board': [[0]], 'color': 'black'}}
     pred = client.post('/predict', json=payload)
     assert pred.status_code == 200
-    assert 'output' in pred.json()
+    assert pred.json()['output'] is not None

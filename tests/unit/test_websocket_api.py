@@ -96,3 +96,15 @@ def test_disconnect_and_reconnect():
             ws2.close()
     finally:
         stop_server(server, thread)
+
+
+def test_predict_default_engine():
+    server, thread = start_server()
+    try:
+        ws = connect(f"ws://127.0.0.1:{PORT}/ws/predict")
+        ws.send(json.dumps({"input": {"board": [[0]], "color": "black"}}))
+        data = json.loads(ws.recv())
+        assert data["output"] is not None
+        ws.close()
+    finally:
+        stop_server(server, thread)

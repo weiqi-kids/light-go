@@ -50,6 +50,41 @@ def gtp_client(monkeypatch):
         thread.join(timeout=2)
 
 
+@pytest.fixture()
+def gtp_client_real():
+    """Start the GTP server without patching predict."""
+    thread = threading.Thread(target=gtp_interface.main, daemon=True)
+    thread.start()
+    time.sleep(0.1)
+    sock = socket.create_connection((gtp_interface.HOST, gtp_interface.PORT))
+    file = sock.makefile("rw", encoding="utf-8", newline="\n")
+
+    def send(cmd: str) -> str:
+        file.write(cmd + "\n")
+        file.flush()
+        lines = []
+        while True:
+            line = file.readline()
+            assert line != ""  # connection should remain open
+            if line == "\n":
+                break
+            lines.append(line.strip())
+        return "\n".join(lines)
+
+    yield send
+
+    try:
+        try:
+            file.write("quit\n")
+            file.flush()
+        except Exception:
+            pass
+    finally:
+        file.close()
+        sock.close()
+        thread.join(timeout=2)
+
+
 def test_gtp_interface_commands(gtp_client):
     assert gtp_client("boardsize 19") == "="
     assert gtp_client("komi 6.5") == "="
@@ -80,3 +115,10 @@ def test_gtp_interface_commands(gtp_client):
     assert gtp_client("genmove black") == "= D4"
     assert gtp_client("unknown_cmd") == "? unknown command"
     assert gtp_client("quit") == "="
+
+
+def test_gtp_interface_default_move(gtp_client_real):
+    assert gtp_client_real("clear_board") == "="
+    resp = gtp_client_real("genmove black")
+    assert resp.startswith("=")
+    assert resp.strip() not in {"=", "= PASS"}

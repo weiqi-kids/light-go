@@ -165,10 +165,76 @@ class Engine:
         return None
 
 
+# ---------------------------------------------------------------------------
+# Module level helpers
+# ---------------------------------------------------------------------------
+
+_engine_instance: "Engine" | None = None
+
+
 __all__ = ["Engine", "predict"]
 
 
 def predict(input_data: Any) -> Any:
-    """Placeholder prediction helper used by demo APIs."""
+    """Predict the next move for ``input_data`` using a lazy ``Engine``."""
 
-    return None
+    global _engine_instance
+    if _engine_instance is None:
+        model_dir = os.environ.get("LIGHTGO_MODEL_DIR", "models")
+        _engine_instance = Engine(model_dir)
+
+    board, color = _extract_board_and_color(input_data)
+    return _engine_instance.decide_move(board, color)
+
+
+def _extract_board_and_color(data: Any) -> tuple[List[List[int]], str]:
+    """Return a board matrix and next color from ``data``."""
+
+    default_size = 19
+    default_board = [[0]]
+    if isinstance(data, dict):
+        board_raw = data.get("board", default_board)
+        color = (
+            data.get("color")
+            or data.get("next_move")
+            or data.get("metadata", {}).get("next_move")
+            or "black"
+        )
+        size = int(data.get("size", default_size))
+    else:
+        board_raw = data
+        color = "black"
+        size = default_size
+
+    # Convert move list to matrix if needed
+    board: List[List[int]]
+    if isinstance(board_raw, list) and board_raw and not isinstance(board_raw[0], list):
+        # Likely a list of moves like [(color, coord)]
+        board = [[0 for _ in range(size)] for _ in range(size)]
+        for item in board_raw:
+            if not isinstance(item, (list, tuple)) or len(item) != 2:
+                continue
+            m_color, coord = item
+            if isinstance(coord, str):
+                if coord.lower() == "pass":
+                    continue
+                chars = "ABCDEFGHJKLMNOPQRST"
+                try:
+                    x = chars.index(coord[0].upper())
+                    y = size - int(coord[1:])
+                except (ValueError, IndexError):
+                    continue
+            elif isinstance(coord, (list, tuple)) and len(coord) == 2:
+                x, y = coord
+            else:
+                continue
+            val = 1 if str(m_color).lower().startswith("b") else -1
+            if 0 <= x < size and 0 <= y < size:
+                board[y][x] = val
+    else:
+        if not isinstance(board_raw, list) or not board_raw:
+            board = [[0 for _ in range(size)] for _ in range(size)]
+        else:
+            board = board_raw
+
+    return board, str(color)
