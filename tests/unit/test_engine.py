@@ -119,3 +119,35 @@ def test_engine_play_specific_strategy(tmp_path: pathlib.Path):
         MockModel.from_pretrained.assert_called_once_with(os.path.join(str(out_dir), 'a.pt'))
         model_inst.predict.assert_called_once_with('c1')
         assert result == ['r']
+
+
+def test_predict_lazy_engine(tmp_path: pathlib.Path, monkeypatch):
+    import core.engine as engine_mod
+    monkeypatch.setattr(engine_mod, "_engine_instance", None, raising=False)
+    engine_inst = Mock()
+    engine_inst.decide_move.return_value = (0, 0)
+    engine_cls = Mock(return_value=engine_inst)
+    monkeypatch.setattr(engine_mod, "Engine", engine_cls)
+    monkeypatch.setenv("LIGHTGO_MODEL_DIR", str(tmp_path))
+
+    result1 = engine_mod.predict({"board": [[0]], "color": "black"})
+    result2 = engine_mod.predict({"board": [[0]], "color": "black"})
+
+    engine_cls.assert_called_once_with(str(tmp_path))
+    assert result1 == (0, 0)
+    assert result2 == (0, 0)
+
+
+def test_predict_empty_move_list(monkeypatch):
+    import core.engine as engine_mod
+    engine_inst = Mock()
+    engine_mod._engine_instance = engine_inst
+    engine_inst.decide_move.return_value = (1, 2)
+
+    result = engine_mod.predict({"board": [], "color": "black", "size": 5})
+
+    board_arg, color_arg = engine_inst.decide_move.call_args[0]
+    assert len(board_arg) == 5
+    assert len(board_arg[0]) == 5
+    assert color_arg == "black"
+    assert result == (1, 2)
