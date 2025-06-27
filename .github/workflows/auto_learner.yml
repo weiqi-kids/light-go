@@ -20,4 +20,4 @@ jobs:
       - name: Install dependencies from requirements.txt
         run: pip install -r requirements.txt
       - name: Run AutoLearner unit tests
-        run: pytest tests/unit_tests/test_auto_learner.py
+        run: pytest tests/unit/test_auto_learner.py

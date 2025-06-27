@@ -4,13 +4,13 @@ on:
   pull_request:
     paths:
       - 'monitoring/performance.py'
-      - 'tests/unit_tests/test_performance.py'
+      - 'tests/performance/test_performance.py'
       - '.github/workflows/performance.yml'
   push:
     branches: [main]
     paths:
       - 'monitoring/performance.py'
-      - 'tests/unit_tests/test_performance.py'
+      - 'tests/performance/test_performance.py'
       - '.github/workflows/performance.yml'
 
 jobs:
@@ -27,4 +27,4 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Run Performance unit tests
-        run: pytest tests/unit_tests/test_performance.py
+        run: pytest tests/performance/test_performance.py
