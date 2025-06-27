@@ -5,6 +5,8 @@ qdrant-client>=1.5.0  # Qdrant 向量數據庫
 flask>=2.3.0          # REST API
 websockets>=11.0      # WebSocket API
 sgfmill>=1.1          # SGF parsing library
+psutil>=5.9.0  # system monitoring
+GPUtil>=1.4.0  # GPU monitoring
 fastapi>=0.100.0      # REST API server using FastAPI
 uvicorn>=0.22.0       # ASGI server for FastAPI
 httpx<0.24           # HTTP client for FastAPI tests
