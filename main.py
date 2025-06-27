@@ -44,7 +44,17 @@ def _load_config(path: str | None) -> Dict[str, Any]:
 
 
 def _run_train(engine: Engine, data: str, output_dir: str) -> str:
-    """Run training task and return saved strategy name."""
+    """Run a training task and return the saved strategy name.
+
+    Parameters
+    ----------
+    engine:
+        Engine instance used for training.
+    data:
+        Directory containing SGF files for training.
+    output_dir:
+        Directory where the trained model checkpoint will be saved.
+    """
 
     strategy = engine.train(data, output_dir)
     logging.info("Saved strategy %s to %s", strategy, engine.strategy_manager.strategies_path)
