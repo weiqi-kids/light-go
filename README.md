@@ -72,48 +72,56 @@ Light-Go/
 
 ## 🚀 啟動模式設計
 
-### 🕹 各種服務模式
+### 🕹 指令列模式
 
-1. API服務模式（最常用）
+`main.py` 提供三種 `--mode` 選項：
 
-```
-python main.py --mode api --port 8080
-```
+1. **train**：從 SGF 目錄訓練新策略
 
-啟動後可以接收HTTP請求：
- - POST /api/move
- - POST /api/analyze
- - GET /api/strategies
+   ```bash
+   python main.py --mode train --data data/training --output data/models
+   ```
 
-2. GTP協議模式（與其他軟件對接）
+   完成後會在指定的 `output` 目錄產生策略檔案。
 
-```
-python main.py --mode gtp
-```
+2. **evaluate**：以現有策略評估資料集
 
-啟動後等待GTP命令：
- - boardsize 19
- - play black D4
- - genmove white
+   ```bash
+   python main.py --mode evaluate --data data/eval --output data/models
+   ```
 
-3. 單次決策模式（快速測試）
+   結果會輸出基本統計資訊 (JSON)。
 
-```
-python main.py --mode single --input game.sgf --move 50
-```
+3. **play**：從單一 SGF 狀態決策下一手
 
-或者
+   ```bash
+   python main.py --mode play --data game.sgf --output data/models
+   ```
 
-```
-python main.py --mode single --liberty "[(3,4,3),(5,6,-2)]" --forbidden "[(9,10)]"
-```
+   於終端機顯示預測座標 `(x, y)`。
 
-4. 學習/訓練模式
+### 🖥 服務啟動
 
-```
-python main.py --mode train --data data/training/ --output data/models/strategies/
-```
-自動學習新策略
+若需啟動 API 或其他介面，可直接執行對應模組：
+
+- **REST API**
+
+  ```bash
+  python -m api.rest_api  # 預設埠號 8000
+  ```
+
+- **WebSocket API**
+
+  ```bash
+  python -m api.websocket_api
+  ```
+
+- **GTP 介面**
+
+  ```bash
+  python -m api.gtp_interface
+  ```
+
 
 ---
 
