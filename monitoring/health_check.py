@@ -30,6 +30,7 @@ class HealthCheckDashboard:
     """Dashboard managing multiple service health checks."""
 
     def __init__(self) -> None:
+        """Initialize empty check registry and FastAPI app."""
         self.checks: Dict[str, CheckCallable] = {}
         self.results: Dict[str, CheckResult] = {}
         self.history: List[Dict[str, Any]] = []

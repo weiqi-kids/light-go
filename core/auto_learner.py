@@ -20,6 +20,7 @@ class AutoLearner:
     """
 
     def __init__(self, manager: StrategyManager) -> None:
+        """Initialize with an existing :class:`StrategyManager`."""
         self.manager = manager
         # Map strategy name to average performance score
         self._scores: Dict[str, float] = {
@@ -136,6 +137,7 @@ class AutoLearner:
     # Internal helpers
     # ------------------------------------------------------------------
     def _next_strategy_name(self) -> str:
+        """Return a unique one-letter strategy name."""
         existing = self.manager.list_strategies()
         for idx in range(26):
             candidate = chr(ord("a") + idx)
@@ -144,9 +146,11 @@ class AutoLearner:
         return f"s{len(existing)}"
 
     def _default_allocation(self) -> float:
+        """Return the default allocation weight for a new strategy."""
         return 1.0 / max(len(self._scores), 1)
 
     def _normalize_allocation(self) -> None:
+        """Normalize allocation weights so they sum to one."""
         total = sum(self._allocation.values())
         if not total:
             return
@@ -154,6 +158,7 @@ class AutoLearner:
             self._allocation[name] /= total
 
     def _adjust_training_allocation(self) -> None:
+        """Update allocation weights based on current scores."""
         total = sum(max(score, 0.0) for score in self._scores.values())
         if total == 0:
             val = self._default_allocation()
@@ -164,6 +169,7 @@ class AutoLearner:
             self._allocation[name] = max(score, 0.0) / total
 
     def _drop_weak_strategies(self) -> None:
+        """Remove poorly performing strategies from tracking."""
         if len(self._scores) <= 1:
             return
         threshold = -0.5

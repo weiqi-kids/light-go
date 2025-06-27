@@ -2,9 +2,9 @@ name: Performance Logging Tests
 
 on:
   pull_request:
-    paths: ["monitoring/logging.py", "tests/unit_tests/logging.py"]
+    paths: ["monitoring/logging.py", "tests/unit_tests/test_logging.py"]
   push:
-    paths: ["monitoring/logging.py", "tests/unit_tests/logging.py"]
+    paths: ["monitoring/logging.py", "tests/unit_tests/test_logging.py"]
 
 jobs:
   test:
@@ -20,4 +20,4 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Run Performance logging unit tests
-        run: pytest tests/unit_tests/logging.py
+        run: pytest tests/unit_tests/test_logging.py

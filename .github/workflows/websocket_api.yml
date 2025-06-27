@@ -4,12 +4,12 @@ on:
   pull_request:
     paths:
       - 'api/websocket_api.py'
-      - 'tests/unit_tests/websocket_api.py'
+      - 'tests/unit_tests/test_websocket_api.py'
   push:
     branches: [main]
     paths:
       - 'api/websocket_api.py'
-      - 'tests/unit_tests/websocket_api.py'
+      - 'tests/unit_tests/test_websocket_api.py'
 
 jobs:
   test:
@@ -25,4 +25,4 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Run WebSocket API unit tests
-        run: pytest tests/unit_tests/websocket_api.py
+        run: pytest tests/unit_tests/test_websocket_api.py

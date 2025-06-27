@@ -5,12 +5,12 @@ on:
     types: [opened, synchronize]
     paths:
       - 'api/rest_api.py'
-      - 'tests/unit_tests/rest_api.py'
+      - 'tests/unit_tests/test_rest_api.py'
       - '.github/workflows/rest_api.yml'
   push:
     paths:
       - 'api/rest_api.py'
-      - 'tests/unit_tests/rest_api.py'
+      - 'tests/unit_tests/test_rest_api.py'
       - '.github/workflows/rest_api.yml'
 
 jobs:
@@ -28,4 +28,4 @@ jobs:
         run: |
           python -m pip install --upgrade pip pytest
       - name: Run REST API unit tests
-        run: pytest tests/unit_tests/rest_api.py
+        run: pytest tests/unit_tests/test_rest_api.py

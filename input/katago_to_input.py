@@ -1,9 +1,12 @@
+"""Convert KataGo training data JSONL into unified input format."""
+
 import sys
 import json
 
 SGF_CHARS = 'ABCDEFGHJKLMNOPQRST'
 
 def katago_to_coords(move_str, board_size_y):
+    """Convert KataGo move like ``A1`` into 0-based coordinates."""
     if not isinstance(move_str, str) or move_str.upper() == "PASS":
         return None
     col_char = move_str[0].upper()
@@ -18,6 +21,7 @@ def katago_to_coords(move_str, board_size_y):
         return None
 
 def process_katago_file(filepath):
+    """Parse a KataGo JSONL file and return converted move data."""
     all_processed_moves = []
     try:
         with open(filepath, 'r') as f:

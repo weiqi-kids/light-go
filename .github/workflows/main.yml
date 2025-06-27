@@ -19,4 +19,4 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Run CLI unit tests
-        run: pytest tests/unit_tests/main.py
+        run: pytest tests/unit_tests/test_main.py
