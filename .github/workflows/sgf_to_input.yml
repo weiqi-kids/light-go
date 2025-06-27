@@ -19,5 +19,5 @@ jobs:
         run: |
           python -m pip install --upgrade pip pytest
       - name: Run tests
-        run: pytest tests/unit_tests/test_sgf_to_input.py
+        run: pytest tests/unit/test_sgf_to_input.py
 

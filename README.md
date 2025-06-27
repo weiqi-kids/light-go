@@ -47,9 +47,9 @@ Light-Go/
 │ └── sgf                          # 對局紀錄
 │
 ├── tests/                         # 🆕 測試架構
-│ ├── unit_tests/
-│ ├── integration_tests/
-│ └── performance_tests/
+│ ├── unit/
+│ ├── integration/
+│ └── performance/
 │
 ├── tools/                         # 🆕 工具腳本
 │ ├── train_strategy.py            # 訓練新策略
