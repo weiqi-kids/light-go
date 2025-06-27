@@ -1,26 +1,112 @@
-"""Entry point for Light-Go command line interface."""
+"""Entry point for Light-Go command line interface.
+
+This file exposes a small CLI utility used throughout the simplified tests.  It
+supports three modes:
+
+``train``     - learn a new strategy from SGF files.
+``evaluate``  - compute simple statistics for a dataset and optionally evaluate
+                an existing strategy.
+``play``      - decide a single move from an SGF board state.
+"""
+
 from __future__ import annotations
 
 import argparse
+import json
+import logging
+import os
+from typing import Any, Dict
 
 from core.engine import Engine
+
+try:  # YAML is optional.  The small tests do not require it.
+    import yaml
+except Exception:  # pragma: no cover - YAML is not mandatory
+    yaml = None
+
+
+def _load_config(path: str | None) -> Dict[str, Any]:
+    """Load optional YAML/JSON configuration file."""
+
+    if not path:
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            if path.endswith(".json"):
+                return json.load(fh)
+            if yaml is not None:
+                return yaml.safe_load(fh)
+    except FileNotFoundError:
+        logging.warning("Config file %s not found", path)
+    except Exception as exc:  # pragma: no cover - generic safety
+        logging.warning("Failed to load config %s: %s", path, exc)
+    return {}
+
+
+def _run_train(engine: Engine, data: str) -> str:
+    """Run training task and return saved strategy name."""
+
+    strategy = engine.train(data)
+    logging.info("Saved strategy %s to %s", strategy, engine.strategy_manager.strategies_path)
+    return strategy
+
+
+def _run_evaluate(engine: Engine, data: str) -> Dict[str, Any]:
+    """Run evaluation and return aggregated statistics."""
+
+    stats = engine.auto_learner.train(data)
+    logging.info("Evaluation finished on %s", data)
+    return stats
+
+
+def _run_play(engine: Engine, sgf_path: str) -> tuple[int, int] | None:
+    """Decide a move from an SGF file."""
+
+    from input.sgf_to_input import parse_sgf
+
+    matrix, metadata, _ = parse_sgf(sgf_path)
+    move = engine.decide_move(matrix, metadata["next_move"])
+    return move
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Light-Go")
-    parser.add_argument("--mode", choices=["train", "api", "gtp", "single"], default="train")
-    parser.add_argument("--data", help="Input data directory")
-    parser.add_argument("--output", help="Output model directory")
+    parser.add_argument("--mode", choices=["train", "evaluate", "play"], required=True)
+    parser.add_argument("--data", help="Input data directory or SGF file")
+    parser.add_argument("--output", required=True, help="Output/working directory")
+    parser.add_argument("--config", help="Optional configuration YAML/JSON")
+    parser.add_argument("--strategy", help="Strategy name or fusion method")
+
     args = parser.parse_args()
 
-    if args.mode == "train":
-        if not args.data or not args.output:
-            parser.error("--data and --output are required for train mode")
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+    config = _load_config(args.config)
+    logging.debug("Loaded config: %s", config)
+
+    try:
         engine = Engine(args.output)
-        name = engine.train(args.data)
-        print(f"Saved strategy {name} to {args.output}")
-    else:
-        print(f"Mode '{args.mode}' is not implemented in this simplified version")
+        if args.strategy:
+            engine.load_strategy(args.strategy)
+
+        if args.mode == "train":
+            if not args.data:
+                parser.error("--data is required for train mode")
+            name = _run_train(engine, args.data)
+            result_path = os.path.join(args.output, f"{name}.pkl")
+            print(result_path)
+        elif args.mode == "evaluate":
+            if not args.data:
+                parser.error("--data is required for evaluate mode")
+            stats = _run_evaluate(engine, args.data)
+            print(json.dumps(stats, indent=2))
+        elif args.mode == "play":
+            if not args.data:
+                parser.error("--data is required for play mode")
+            move = _run_play(engine, args.data)
+            print(move)
+    except Exception as exc:  # pragma: no cover - defensive
+        logging.exception("Unhandled error: %s", exc)
 
 
 if __name__ == "__main__":
