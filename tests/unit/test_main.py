@@ -29,7 +29,7 @@ def test_argparse_train_calls_engine_train(tmp_path, capsys):
     with patch.object(sys, 'argv', argv), patch('cli_main.Engine', return_value=engine_mock) as engine_cls:
         cli_main.main()
         engine_cls.assert_called_with(str(tmp_path))
-        engine_mock.train.assert_called_with('data_dir')
+        engine_mock.train.assert_called_with('data_dir', str(tmp_path))
         assert capsys.readouterr().out.strip().endswith('s1.pkl')
 
 
