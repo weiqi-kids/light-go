@@ -43,10 +43,20 @@ def _load_config(path: str | None) -> Dict[str, Any]:
     return {}
 
 
-def _run_train(engine: Engine, data: str) -> str:
-    """Run training task and return saved strategy name."""
+def _run_train(engine: Engine, data: str, output_dir: str) -> str:
+    """Run a training task and return the saved strategy name.
 
-    strategy = engine.train(data)
+    Parameters
+    ----------
+    engine:
+        Engine instance used for training.
+    data:
+        Directory containing SGF files for training.
+    output_dir:
+        Directory where the trained model checkpoint will be saved.
+    """
+
+    strategy = engine.train(data, output_dir)
     logging.info("Saved strategy %s to %s", strategy, engine.strategy_manager.strategies_path)
     return strategy
 
@@ -93,7 +103,7 @@ def main() -> None:
         if args.mode == "train":
             if not args.data:
                 parser.error("--data is required for train mode")
-            name = _run_train(engine, args.data)
+            name = _run_train(engine, args.data, args.output)
             result_path = os.path.join(args.output, f"{name}.pkl")
             print(result_path)
         elif args.mode == "evaluate":
