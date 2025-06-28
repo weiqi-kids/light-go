@@ -24,39 +24,62 @@ import importlib
 DEFAULT_STRATEGY_DIR = os.path.join("data", "models", "strategies")
 
 
-def load_all_strategies(directory: str) -> Dict[str, Dict[str, Any]]:
-    """Return mapping of strategy names to filter parameters from ``directory``.
+def load_all_strategies(directory: str) -> Dict[str, Any]:
+    """Load every serialized strategy found in ``directory``.
+
+    The function looks for ``.pkl`` files produced by :func:`save_strategy` and
+    reconstructs each strategy object.  If a corresponding ``.flt`` file exists
+    the filter parameters are loaded and attached to the strategy under the
+    ``training_params`` attribute.  An ``accept_state`` callable is provided so
+    that callers can easily determine whether a specific game state should be
+    used for further training of that strategy.
 
     Parameters
     ----------
-    directory:
-        Path containing ``.flt`` files for each strategy.
+    directory : str
+        Path to the directory containing strategy files.  This typically points
+        to ``data/models/strategies``.
 
     Returns
     -------
-    Dict[str, Dict[str, Any]]
-        Loaded filter dictionaries.  Each dictionary is augmented with an
-        ``accept_state`` callable determining whether a board state should be
-        used for training.
+    Dict[str, Any]
+        Mapping of strategy names to the loaded strategy objects.
     """
 
-    strategies: Dict[str, Dict[str, Any]] = {}
+    loaded: Dict[str, Any] = {}
     if not os.path.isdir(directory):
-        return strategies
+        return loaded
 
     for fname in os.listdir(directory):
-        if not fname.endswith(".flt"):
+        if not fname.endswith(".pkl"):
             continue
         name = os.path.splitext(fname)[0]
-        path = os.path.join(directory, fname)
-        with open(path, "rb") as f:
-            try:
-                params = pickle.load(f)
-            except Exception:
-                params = {}
+
+        # --- load the core strategy object ---------------------------------
+        strategy_path = os.path.join(directory, fname)
+        meta_path = os.path.join(directory, f"{name}.meta")
+        if os.path.exists(meta_path):
+            with open(meta_path, "rb") as f:
+                mod_name, cls_name = pickle.load(f)
+            module = importlib.import_module(mod_name)
+            cls: Type[StrategyProtocol] = getattr(module, cls_name)
+            strategy = cls.load(strategy_path)
+        else:
+            with open(strategy_path, "rb") as f:
+                strategy = pickle.load(f)
+
+        # --- load optional filter parameters -------------------------------
+        filter_path = os.path.join(directory, f"{name}.flt")
+        params: Dict[str, Any] = {}
+        if os.path.exists(filter_path):
+            with open(filter_path, "rb") as f:
+                try:
+                    params = pickle.load(f)
+                except Exception:
+                    params = {}
 
         def accept_state(state: Dict[str, Any], params=params) -> bool:
-            """Heuristic deciding if ``state`` should train the strategy."""
+            """Return ``True`` if ``state`` should be used for training."""
 
             min_stones = params.get("min_stones")
             if min_stones is not None:
@@ -68,63 +91,83 @@ def load_all_strategies(directory: str) -> Dict[str, Dict[str, Any]]:
             return True
 
         params["accept_state"] = accept_state
-        strategies[name] = params
 
-    return strategies
+        # expose params on the strategy for external checks
+        try:
+            setattr(strategy, "training_params", params)
+        except Exception:
+            pass
+
+        loaded[name] = strategy
+
+    return loaded
 
 
 def monitor_and_manage_strategies(
-    strategies: Dict[str, Dict[str, Any]], threshold: int
-) -> Dict[str, Dict[str, Any]]:
-    """Ensure at least ``threshold`` strategies can accept new states.
+    strategies: Dict[str, Any], acceptance_threshold: int
+) -> Dict[str, Any]:
+    """Ensure enough strategies remain receptive to new training data.
 
     Parameters
     ----------
-    strategies:
-        Mapping of strategy names to their filter dictionaries.
-    threshold:
-        Minimum number of strategies allowed to accept more training data.
+    strategies : dict
+        Mapping of strategy names to strategy objects.  Each object may expose a
+        ``training_params`` attribute containing a ``stable`` flag.
+    acceptance_threshold : int
+        Minimum number of strategies that should be able to accept additional
+        game states for training purposes.
 
     Returns
     -------
-    Dict[str, Dict[str, Any]]
-        Possibly updated strategy mapping including any newly created entries.
+    Dict[str, Any]
+        Possibly updated ``strategies`` dictionary.  New placeholder strategies
+        are inserted if required so that at least ``acceptance_threshold``
+        entries can receive training data.
     """
 
-    capable = [name for name, p in strategies.items() if not p.get("stable")]
+    capable = []
+    for name, strat in strategies.items():
+        params = getattr(strat, "training_params", {})
+        if not isinstance(params, dict) or not params.get("stable"):
+            capable.append(name)
+    
     count = len(capable)
     next_idx = 1
-    while count < threshold:
+    while count < acceptance_threshold:
         new_name = f"strategy_{len(strategies) + next_idx}"
-        strategies[new_name] = {"stable": False}
+        strategies[new_name] = {}
         count += 1
         next_idx += 1
+
     return strategies
 
 
 def evaluate_strategies(
-    strategies: Dict[str, Dict[str, Any]], stability_criteria: float
+    strategies: Dict[str, Any], stability_threshold: float
 ) -> Dict[str, float]:
-    """Return evaluation scores for strategies meeting ``stability_criteria``.
+    """Score strategies whose parameters have stabilized.
 
     Parameters
     ----------
-    strategies:
-        Mapping of strategy names to their filter dictionaries.
-    stability_criteria:
-        Threshold used to determine if a strategy's parameters are considered
-        stable.
+    strategies : dict
+        Mapping of strategy names to strategy objects.  Each object may expose a
+        ``training_params`` dictionary containing ``wins``, ``games`` and a
+        ``stability`` value.
+    stability_threshold : float
+        Minimum stability value required before a strategy is evaluated.
 
     Returns
     -------
     Dict[str, float]
-        Mapping of strategy names to computed evaluation scores.
+        Dictionary mapping strategy names to their computed win ratios.
     """
 
     scores: Dict[str, float] = {}
-    for name, params in strategies.items():
-        stability = params.get("stability", 0.0)
-        if stability < stability_criteria:
+    for name, strat in strategies.items():
+        params = getattr(strat, "training_params", {})
+        if not isinstance(params, dict):
+            continue
+        if params.get("stability", 0.0) < stability_threshold:
             continue
         wins = params.get("wins")
         games = params.get("games")
@@ -136,17 +179,18 @@ def evaluate_strategies(
 
 
 def load_strategy(name: str) -> Any:
-    """Load and return strategy ``name`` from :mod:`auto_learner` output.
+    """Load a single strategy previously saved by :func:`save_strategy`.
 
     Parameters
     ----------
-    name:
-        Identifier of the strategy to load from :data:`DEFAULT_STRATEGY_DIR`.
+    name : str
+        Name of the strategy file (without extension) located inside
+        :data:`DEFAULT_STRATEGY_DIR`.
 
     Returns
     -------
     Any
-        The deserialized strategy instance.
+        The reconstructed strategy object as produced by ``auto_learner``.
     """
 
     path = os.path.join(DEFAULT_STRATEGY_DIR, f"{name}.pkl")
@@ -163,14 +207,16 @@ def load_strategy(name: str) -> Any:
 
 
 def save_strategy(strategy: Any, name: str) -> None:
-    """Persist ``strategy`` under ``name`` in :data:`DEFAULT_STRATEGY_DIR`.
+    """Serialize ``strategy`` using the standard format produced by ``auto_learner``.
 
     Parameters
     ----------
-    strategy:
-        The strategy object generated by :mod:`auto_learner`.
-    name:
-        Name used for the output files.
+    strategy : Any
+        Strategy object to persist.  The object may implement a ``save`` method
+        compatible with :class:`StrategyProtocol`.
+    name : str
+        Name to use for the generated ``.pkl`` and ``.meta`` files inside
+        :data:`DEFAULT_STRATEGY_DIR`.
     """
 
     path = os.path.join(DEFAULT_STRATEGY_DIR, f"{name}.pkl")
