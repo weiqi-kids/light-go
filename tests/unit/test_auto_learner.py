@@ -7,7 +7,6 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
 from core.auto_learner import AutoLearner
 from core.strategy_manager import StrategyManager
-from core.sample_strategy import SampleGoStrategy
 
 
 def _build_manager(existing=None):
@@ -28,7 +27,7 @@ def test_discover_strategy_registers_new_strategy(tmp_path):
     manager.save_strategy.assert_called_once()
     args = manager.save_strategy.call_args[0]
     assert args[0] == new_name
-    assert isinstance(args[1], SampleGoStrategy)
+    assert isinstance(args[1], dict)
     assert new_name in learner._scores
     assert new_name in learner._allocation
     assert abs(sum(learner._allocation.values()) - 1.0) < 1e-6

@@ -211,3 +211,155 @@ class StrategyManager:
         }
         report["converged"] = (conv_correct / conv_total) if conv_total else 0.0
         return report
+
+
+# ---------------------------------------------------------------------------
+# Module level utility functions
+# ---------------------------------------------------------------------------
+
+DEFAULT_STRATEGY_DIR = os.path.join("data", "models", "strategies")
+
+
+def load_all_strategies(directory: str) -> Dict[str, Dict[str, Any]]:
+    """Return all strategy parameter dictionaries found in ``directory``.
+
+    Parameters
+    ----------
+    directory:
+        Path to the strategy directory containing ``*.pkl`` files.
+
+    Returns
+    -------
+    Dict[str, Dict[str, Any]]
+        Mapping of strategy names to the loaded dictionaries.  Each
+        dictionary includes a callable under the ``accept`` key which takes
+        a game state and returns ``True`` when the strategy should train on
+        that state.
+    """
+
+    strategies: Dict[str, Dict[str, Any]] = {}
+    os.makedirs(directory, exist_ok=True)
+    for fname in os.listdir(directory):
+        if not fname.endswith(".pkl"):
+            continue
+        name = os.path.splitext(fname)[0]
+        path = os.path.join(directory, fname)
+        with open(path, "rb") as f:
+            params = pickle.load(f)
+
+        if isinstance(params, dict):
+            threshold = params.get("min_games", 0)
+
+            def _accept(game_state: Dict[str, Any], th: int = threshold) -> bool:
+                return game_state.get("games", 0) >= th
+
+            params["accept"] = _accept
+        strategies[name] = params
+    return strategies
+
+
+def monitor_and_manage_strategies(
+    strategies: Dict[str, Dict[str, Any]], threshold: int
+) -> Dict[str, Dict[str, Any]]:
+    """Ensure at least ``threshold`` strategies can accept new game states.
+
+    Parameters
+    ----------
+    strategies:
+        Already loaded strategy dictionary.
+    threshold:
+        Minimum number of strategies that must be able to accept a new game
+        state via their ``accept`` callable.
+
+    Returns
+    -------
+    Dict[str, Dict[str, Any]]
+        The potentially updated strategy mapping.  New empty strategies are
+        created when necessary to satisfy ``threshold``.
+    """
+
+    def _is_capable(data: Dict[str, Any]) -> bool:
+        accept = data.get("accept")
+        return callable(accept)
+
+    capable = [name for name, data in strategies.items() if _is_capable(data)]
+    count = len(capable)
+
+    while count < threshold:
+        new_name = f"strategy_{len(strategies) + 1}"
+
+        def _accept(_state: Dict[str, Any]) -> bool:
+            return True
+
+        strategies[new_name] = {"accept": _accept}
+        capable.append(new_name)
+        count += 1
+
+    return strategies
+
+
+def evaluate_strategies(
+    strategies: Dict[str, Dict[str, Any]], stability_criteria: float
+) -> Dict[str, float]:
+    """Return evaluation scores for ``strategies`` based on stability.
+
+    Parameters
+    ----------
+    strategies:
+        Mapping of strategy names to their parameter dictionaries.
+    stability_criteria:
+        Numeric threshold used to decide whether the parameters of a strategy
+        are considered stable.
+
+    Returns
+    -------
+    Dict[str, float]
+        A mapping from strategy name to an evaluation score.  Unstable
+        strategies receive a score of ``0.0``.
+    """
+
+    scores: Dict[str, float] = {}
+    for name, params in strategies.items():
+        numeric = [v for v in params.values() if isinstance(v, (int, float))]
+        if not numeric:
+            scores[name] = 0.0
+            continue
+        stable = max(numeric) - min(numeric) <= stability_criteria
+        scores[name] = sum(numeric) / len(numeric) if stable else 0.0
+    return scores
+
+
+def load_strategy(name: str) -> Dict[str, Any]:
+    """Load ``name`` from :data:`DEFAULT_STRATEGY_DIR`.
+
+    Parameters
+    ----------
+    name:
+        Strategy identifier to load from disk.
+
+    Returns
+    -------
+    Dict[str, Any]
+        The loaded strategy object.
+    """
+
+    path = os.path.join(DEFAULT_STRATEGY_DIR, f"{name}.pkl")
+    with open(path, "rb") as f:
+        return pickle.load(f)
+
+
+def save_strategy(strategy: Dict[str, Any], name: str) -> None:
+    """Persist ``strategy`` under ``name`` inside :data:`DEFAULT_STRATEGY_DIR`.
+
+    Parameters
+    ----------
+    strategy:
+        Dictionary of strategy parameters to save.
+    name:
+        Name of the strategy file (without extension).
+    """
+
+    os.makedirs(DEFAULT_STRATEGY_DIR, exist_ok=True)
+    path = os.path.join(DEFAULT_STRATEGY_DIR, f"{name}.pkl")
+    with open(path, "wb") as f:
+        pickle.dump(strategy, f)
