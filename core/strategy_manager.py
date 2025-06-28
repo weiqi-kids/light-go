@@ -12,7 +12,8 @@ from __future__ import annotations
 import os
 import pickle
 from collections import Counter
-from typing import Any, Dict, Iterable, List, Optional, Protocol
+from typing import Any, Dict, Iterable, List, Optional, Protocol, Type
+import importlib
 
 
 class StrategyProtocol(Protocol):
@@ -38,6 +39,8 @@ class StrategyManager:
         self.strategies_path = strategies_path
         os.makedirs(self.strategies_path, exist_ok=True)
         self._strategies: Dict[str, StrategyProtocol | Any] = {}
+        # Mapping of strategy name to class information for loading
+        self._strategy_classes: Dict[str, tuple[str, str]] = {}
 
     # ------------------------------------------------------------------
     # Utilities compatible with legacy code
@@ -55,16 +58,39 @@ class StrategyManager:
         if name in self._strategies:
             return self._strategies[name]
         path = os.path.join(self.strategies_path, f"{name}.pkl")
-        with open(path, "rb") as f:
-            strategy = pickle.load(f)
+        meta_path = os.path.join(self.strategies_path, f"{name}.meta")
+        if os.path.exists(meta_path):
+            with open(meta_path, "rb") as f:
+                mod_name, cls_name = pickle.load(f)
+            module = importlib.import_module(mod_name)
+            cls: Type[StrategyProtocol] = getattr(module, cls_name)
+            strategy = cls.load(path)
+            self._strategy_classes[name] = (mod_name, cls_name)
+        else:
+            with open(path, "rb") as f:
+                strategy = pickle.load(f)
         self._strategies[name] = strategy
         return strategy
 
     def save_strategy(self, name: str, data: Any) -> None:
-        """Save ``data`` under ``name`` using pickle."""
+        """Save ``data`` under ``name`` using pickle or custom ``save``."""
         path = os.path.join(self.strategies_path, f"{name}.pkl")
-        with open(path, "wb") as f:
-            pickle.dump(data, f)
+        meta_path = os.path.join(self.strategies_path, f"{name}.meta")
+        if hasattr(data, "save"):
+            data.save(path)  # type: ignore[attr-defined]
+        else:
+            with open(path, "wb") as f:
+                pickle.dump(data, f)
+        if hasattr(type(data), "load"):
+            self._strategy_classes[name] = (
+                data.__class__.__module__,
+                data.__class__.__name__,
+            )
+            with open(meta_path, "wb") as f:
+                pickle.dump(self._strategy_classes[name], f)
+        elif os.path.exists(meta_path):
+            os.remove(meta_path)
+            self._strategy_classes.pop(name, None)
         self._strategies[name] = data
 
     # ------------------------------------------------------------------
@@ -77,12 +103,7 @@ class StrategyManager:
     def save_strategies(self) -> None:
         """Persist all registered strategies to ``strategies_path``."""
         for name, strategy in self._strategies.items():
-            path = os.path.join(self.strategies_path, f"{name}.pkl")
-            if hasattr(strategy, "save"):
-                strategy.save(path)  # type: ignore[attr-defined]
-            else:  # Fallback for plain objects
-                with open(path, "wb") as f:
-                    pickle.dump(strategy, f)
+            self.save_strategy(name, strategy)
 
     def load_strategies(self) -> None:
         """Load all strategies found in ``strategies_path``."""
@@ -92,10 +113,7 @@ class StrategyManager:
             name = os.path.splitext(fname)[0]
             if name in self._strategies:
                 continue
-            path = os.path.join(self.strategies_path, fname)
-            with open(path, "rb") as f:
-                strategy = pickle.load(f)
-            self._strategies[name] = strategy
+            self.load_strategy(name)
 
     def run_all(self, input_data: Any) -> Dict[str, Any]:
         """Run ``predict`` on all registered strategies."""

@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 from input.sgf_to_input import parse_sgf
 from core.liberty import count_liberties
 from .strategy_manager import StrategyManager
+from .sample_strategy import SampleGoStrategy
 
 
 class AutoLearner:
@@ -79,9 +80,10 @@ class AutoLearner:
 
     def train_and_save(self, data_path: str) -> str:
         """Train from ``data_path`` and save the resulting strategy."""
-        model_data = self.train(data_path)
+        stats = self.train(data_path)
         name = self._next_strategy_name()
-        self.manager.save_strategy(name, model_data)
+        strategy = SampleGoStrategy(name=name, stats=stats)
+        self.manager.save_strategy(name, strategy)
         self._scores[name] = 0.0
         self._allocation[name] = self._default_allocation()
         self._normalize_allocation()
@@ -90,15 +92,14 @@ class AutoLearner:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
-    def discover_strategy(self, data: Dict[str, Any], model: Optional[Dict[str, Any]] = None) -> str:
-        """Register ``model`` (or ``data``) as a brand new strategy.
+    def discover_strategy(
+        self, data: Dict[str, Any], model: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """Register ``model`` (or ``data``) as a brand new strategy."""
 
-        The returned name can later be used with :meth:`assign_training` and
-        :meth:`receive_feedback`.
-        """
-        content = model if model is not None else data
         name = self._next_strategy_name()
-        self.manager.save_strategy(name, content)
+        strategy = SampleGoStrategy(name=name, stats=model or data)
+        self.manager.save_strategy(name, strategy)
         self._scores[name] = 0.0
         self._allocation[name] = self._default_allocation()
         self._normalize_allocation()
