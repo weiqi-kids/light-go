@@ -11,18 +11,20 @@ def test_auto_learner_strategy_manager_integration():
         manager = StrategyManager(tmpdir)
         learner = AutoLearner(manager)
 
-        strategy_name = learner.discover_strategy({'dummy': 1})
-        assert strategy_name in manager.list_strategies()
+        primary = learner.discover_strategy({"dummy": 1})
+        secondary = learner.discover_strategy({"dummy": 2})
 
-        board_features = {'board': []}
-        selected_before = learner.assign_training(board_features)
-        assert strategy_name in selected_before
-        alloc_before = learner._allocation[strategy_name]
+        board_features = {"board": []}
+        selected_before = set(learner.assign_training(board_features))
+        assert primary in selected_before
+        alloc_before = dict(learner._allocation)
 
-        learner.receive_feedback(strategy_name, 1.0)
+        learner.receive_feedback(primary, 1.0)
 
-        selected_after = learner.assign_training(board_features)
-        assert strategy_name in selected_after
-        alloc_after = learner._allocation[strategy_name]
-        assert selected_after == selected_before
-        assert alloc_after != pytest.approx(alloc_before)
+        selected_after = set(learner.assign_training(board_features))
+        assert primary in selected_after
+        assert secondary not in selected_after
+        alloc_after = learner._allocation
+        # Allocation for the winning strategy should increase
+        assert alloc_after[primary] > alloc_before[primary]
+        assert alloc_after[secondary] < alloc_before[secondary]

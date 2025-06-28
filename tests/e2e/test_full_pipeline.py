@@ -18,17 +18,21 @@ def test_full_pipeline():
         manager = StrategyManager(strat_dir)
         learner = AutoLearner(manager)
 
-        name = learner.train_and_save(data_dir)
-        assert name in manager.list_strategies()
+        primary = learner.train_and_save(data_dir)
+        secondary = learner.discover_strategy({"dummy": 1})
+        assert primary in manager.list_strategies()
 
         board_features = {'board': [[0]*5 for _ in range(5)]}
-        before = learner.assign_training(board_features)
-        assert name in before
-        alloc_before = learner._allocation[name]
+        before = set(learner.assign_training(board_features))
+        assert primary in before
+        assert secondary in before
+        alloc_before = dict(learner._allocation)
 
-        learner.receive_feedback(name, 1.0)
+        learner.receive_feedback(primary, 1.0)
 
-        after = learner.assign_training(board_features)
-        alloc_after = learner._allocation[name]
-        assert after == before
-        assert alloc_after > alloc_before
+        after = set(learner.assign_training(board_features))
+        assert primary in after
+        assert secondary not in after
+        alloc_after = learner._allocation
+        assert alloc_after[primary] > alloc_before[primary]
+        assert alloc_after[secondary] < alloc_before[secondary]
