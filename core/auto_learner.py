@@ -7,7 +7,6 @@ from typing import Any, Dict, List, Optional
 from input.sgf_to_input import parse_sgf
 from core.liberty import count_liberties
 from .strategy_manager import StrategyManager
-from .sample_strategy import SampleGoStrategy
 
 
 class AutoLearner:
@@ -82,8 +81,7 @@ class AutoLearner:
         """Train from ``data_path`` and save the resulting strategy."""
         stats = self.train(data_path)
         name = self._next_strategy_name()
-        strategy = SampleGoStrategy(name=name, stats=stats)
-        self.manager.save_strategy(name, strategy)
+        self.manager.save_strategy(name, stats)
         self._scores[name] = 0.0
         self._allocation[name] = self._default_allocation()
         self._normalize_allocation()
@@ -98,8 +96,7 @@ class AutoLearner:
         """Register ``model`` (or ``data``) as a brand new strategy."""
 
         name = self._next_strategy_name()
-        strategy = SampleGoStrategy(name=name, stats=model or data)
-        self.manager.save_strategy(name, strategy)
+        self.manager.save_strategy(name, model or data)
         self._scores[name] = 0.0
         self._allocation[name] = self._default_allocation()
         self._normalize_allocation()
