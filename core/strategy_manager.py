@@ -11,9 +11,20 @@ from __future__ import annotations
 
 import os
 import pickle
+import logging
 from collections import Counter
-from typing import Any, Callable, Dict, Iterable, List, Optional, Protocol, Type
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Protocol,
+    Type,
+)
 import importlib
+from types import SimpleNamespace
 
 # ---------------------------------------------------------------------------
 # Module level helpers and utilities
@@ -23,40 +34,120 @@ import importlib
 # filter parameters and pickled models here by default.
 DEFAULT_STRATEGY_DIR = os.path.join("data", "models", "strategies")
 
+# module level logger
+logger = logging.getLogger(__name__)
 
-def load_all_strategies(directory: str) -> Dict[str, Dict[str, Any]]:
-    """Return mapping of strategy names to filter parameters from ``directory``.
+
+def create_strategy(params: Optional[Dict[str, Any]] = None) -> TrainableStrategyProtocol:
+    """Return a minimal placeholder strategy instance.
 
     Parameters
     ----------
-    directory:
-        Path containing ``.flt`` files for each strategy.
+    params : Optional[Dict[str, Any]], optional
+        Optional dictionary used to pre-populate ``training_params``.  If
+        omitted a default ``{"stable": False}`` mapping is created.
 
     Returns
     -------
-    Dict[str, Dict[str, Any]]
-        Loaded filter dictionaries.  Each dictionary is augmented with an
-        ``accept_state`` callable determining whether a board state should be
-        used for training.
+    TrainableStrategyProtocol
+        Object exposing ``training_params`` and ``accept_state`` so monitoring
+        utilities can treat it as a fully fledged strategy until a real model is
+        trained.
+
+    Notes
+    -----
+    ``training_params`` must be a dictionary and ``accept_state`` must be a
+    callable taking a ``state`` dictionary describing a board position.  The
+    ``state`` is expected to contain ``total_black_stones`` and
+    ``total_white_stones`` keys.
     """
 
-    strategies: Dict[str, Dict[str, Any]] = {}
+    params = dict(params or {})
+    params.setdefault("stable", False)
+
+    def accept_state(_: Dict[str, Any]) -> bool:
+        return True
+
+    strat: TrainableStrategyProtocol = SimpleNamespace(
+        training_params=params,
+        accept_state=accept_state,
+    )
+
+    if not isinstance(strat.training_params, dict) or not callable(strat.accept_state):
+        logger.warning("Generated strategy missing required interface")
+    return strat
+
+
+def load_all_strategies(directory: str) -> Dict[str, TrainableStrategyProtocol]:
+    """Load every serialized strategy found in ``directory``.
+
+    The function looks for ``.pkl`` files produced by :func:`save_strategy` and
+    reconstructs each strategy object.  If a corresponding ``.flt`` file exists
+    the filter parameters are loaded and attached to the strategy under the
+    ``training_params`` attribute.  The associated ``accept_state`` callable is
+    added both to the parameters dictionary and to the strategy instance so that
+    callers can query it directly.
+
+    Parameters
+    ----------
+    directory : str
+        Path to the directory containing strategy files.  This typically points
+        to ``data/models/strategies``.
+
+    Returns
+    -------
+    Dict[str, TrainableStrategyProtocol]
+        Mapping of strategy names to the loaded strategy objects.  Only
+        strategies exposing ``training_params`` (dict) and ``accept_state``
+        (callable) are included.
+    """
+
+    loaded: Dict[str, TrainableStrategyProtocol] = {}
     if not os.path.isdir(directory):
-        return strategies
+        logger.warning("Strategy directory '%s' not found", directory)
+        return loaded
 
     for fname in os.listdir(directory):
-        if not fname.endswith(".flt"):
+        if not fname.endswith(".pkl"):
             continue
         name = os.path.splitext(fname)[0]
-        path = os.path.join(directory, fname)
-        with open(path, "rb") as f:
-            try:
-                params = pickle.load(f)
-            except Exception:
-                params = {}
+
+        # --- load the core strategy object ---------------------------------
+        strategy_path = os.path.join(directory, fname)
+        meta_path = os.path.join(directory, f"{name}.meta")
+        try:
+            if os.path.exists(meta_path):
+                with open(meta_path, "rb") as f:
+                    mod_name, cls_name = pickle.load(f)
+                module = importlib.import_module(mod_name)
+                cls: Type[TrainableStrategyProtocol] = getattr(module, cls_name)
+                strategy = cls.load(strategy_path)
+            else:
+                with open(strategy_path, "rb") as f:
+                    strategy = pickle.load(f)
+        except Exception as exc:
+            logger.warning("Could not load strategy '%s': %s", name, exc)
+            continue
+
+        # --- load optional filter parameters -------------------------------
+        filter_path = os.path.join(directory, f"{name}.flt")
+        params: Dict[str, Any] = {}
+        if os.path.exists(filter_path):
+            with open(filter_path, "rb") as f:
+                try:
+                    params = pickle.load(f)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to load filter parameters for '%s': %s",
+                        name,
+                        exc,
+                    )
+                    params = {}
+        else:
+            logger.debug("Filter file for '%s' not found", name)
 
         def accept_state(state: Dict[str, Any], params=params) -> bool:
-            """Heuristic deciding if ``state`` should train the strategy."""
+            """Return ``True`` if ``state`` should be used for training."""
 
             min_stones = params.get("min_stones")
             if min_stones is not None:
@@ -68,63 +159,96 @@ def load_all_strategies(directory: str) -> Dict[str, Dict[str, Any]]:
             return True
 
         params["accept_state"] = accept_state
-        strategies[name] = params
 
-    return strategies
+        # expose params and callable directly on the strategy object
+        try:
+            setattr(strategy, "training_params", params)
+            setattr(strategy, "accept_state", accept_state)
+        except Exception as exc:
+            logger.warning("Failed to attach metadata to '%s': %s", name, exc)
+
+        # ensure the loaded object conforms to the expected protocol
+        if not isinstance(getattr(strategy, "training_params", None), dict):
+            logger.warning("Strategy '%s' missing 'training_params'; skipping", name)
+            continue
+        if not callable(getattr(strategy, "accept_state", None)):
+            logger.warning("Strategy '%s' missing 'accept_state'; skipping", name)
+            continue
+
+        loaded[name] = strategy
+
+    return loaded
 
 
 def monitor_and_manage_strategies(
-    strategies: Dict[str, Dict[str, Any]], threshold: int
-) -> Dict[str, Dict[str, Any]]:
-    """Ensure at least ``threshold`` strategies can accept new states.
+    strategies: Dict[str, TrainableStrategyProtocol],
+    acceptance_threshold: int,
+) -> Dict[str, TrainableStrategyProtocol]:
+    """Ensure enough strategies remain receptive to new training data.
 
     Parameters
     ----------
-    strategies:
-        Mapping of strategy names to their filter dictionaries.
-    threshold:
-        Minimum number of strategies allowed to accept more training data.
+    strategies : dict
+        Mapping of strategy names to strategy objects.  Each object may expose a
+        ``training_params`` attribute containing a ``stable`` flag.
+    acceptance_threshold : int
+        Minimum number of strategies that should be able to accept additional
+        game states for training purposes.
 
     Returns
     -------
-    Dict[str, Dict[str, Any]]
-        Possibly updated strategy mapping including any newly created entries.
+    Dict[str, TrainableStrategyProtocol]
+        Possibly updated ``strategies`` dictionary.  New placeholder strategies
+        created via :func:`create_strategy` are inserted if required so that at
+        least ``acceptance_threshold`` entries can receive training data.
     """
 
-    capable = [name for name, p in strategies.items() if not p.get("stable")]
+    capable = []
+    for name, strat in strategies.items():
+        params = getattr(strat, "training_params", {})
+        if not isinstance(params, dict) or not params.get("stable"):
+            capable.append(name)
+    
     count = len(capable)
     next_idx = 1
-    while count < threshold:
+    while count < acceptance_threshold:
         new_name = f"strategy_{len(strategies) + next_idx}"
-        strategies[new_name] = {"stable": False}
+        strategies[new_name] = create_strategy()
         count += 1
         next_idx += 1
+
     return strategies
 
 
 def evaluate_strategies(
-    strategies: Dict[str, Dict[str, Any]], stability_criteria: float
+    strategies: Dict[str, TrainableStrategyProtocol],
+    stability_threshold: float,
 ) -> Dict[str, float]:
-    """Return evaluation scores for strategies meeting ``stability_criteria``.
+    """Score strategies whose parameters have stabilized.
 
     Parameters
     ----------
-    strategies:
-        Mapping of strategy names to their filter dictionaries.
-    stability_criteria:
-        Threshold used to determine if a strategy's parameters are considered
-        stable.
+    strategies : Dict[str, TrainableStrategyProtocol]
+        Mapping of strategy names to strategy objects. Each object must expose a
+        ``training_params`` dictionary containing ``wins``, ``games`` and a
+        ``stability`` value as well as an ``accept_state`` callable.
+    stability_threshold : float
+        Minimum stability value required before a strategy is evaluated.
 
     Returns
     -------
     Dict[str, float]
-        Mapping of strategy names to computed evaluation scores.
+        Dictionary mapping strategy names to their computed win ratios.  This
+        function can easily be extended with alternative scoring logic by
+        adjusting the computation inside the loop.
     """
 
     scores: Dict[str, float] = {}
-    for name, params in strategies.items():
-        stability = params.get("stability", 0.0)
-        if stability < stability_criteria:
+    for name, strat in strategies.items():
+        params = getattr(strat, "training_params", {})
+        if not isinstance(params, dict):
+            continue
+        if params.get("stability", 0.0) < stability_threshold:
             continue
         wins = params.get("wins")
         games = params.get("games")
@@ -135,18 +259,19 @@ def evaluate_strategies(
     return scores
 
 
-def load_strategy(name: str) -> Any:
-    """Load and return strategy ``name`` from :mod:`auto_learner` output.
+def load_strategy(name: str) -> TrainableStrategyProtocol:
+    """Load a single strategy previously saved by :func:`save_strategy`.
 
     Parameters
     ----------
-    name:
-        Identifier of the strategy to load from :data:`DEFAULT_STRATEGY_DIR`.
+    name : str
+        Name of the strategy file (without extension) located inside
+        :data:`DEFAULT_STRATEGY_DIR`.
 
     Returns
     -------
-    Any
-        The deserialized strategy instance.
+    TrainableStrategyProtocol
+        The reconstructed strategy object as produced by ``auto_learner``.
     """
 
     path = os.path.join(DEFAULT_STRATEGY_DIR, f"{name}.pkl")
@@ -155,22 +280,32 @@ def load_strategy(name: str) -> Any:
         with open(meta_path, "rb") as f:
             mod_name, cls_name = pickle.load(f)
         module = importlib.import_module(mod_name)
-        cls: Type[StrategyProtocol] = getattr(module, cls_name)
-        return cls.load(path)
+        cls: Type[TrainableStrategyProtocol] = getattr(module, cls_name)
+        strategy = cls.load(path)
+    else:
+        with open(path, "rb") as f:
+            strategy = pickle.load(f)
 
-    with open(path, "rb") as f:
-        return pickle.load(f)
+    if not isinstance(getattr(strategy, "training_params", None), dict) or not callable(
+        getattr(strategy, "accept_state", None)
+    ):
+        logger.warning("Strategy '%s' missing required interface", name)
+    return strategy
 
 
 def save_strategy(strategy: Any, name: str) -> None:
-    """Persist ``strategy`` under ``name`` in :data:`DEFAULT_STRATEGY_DIR`.
+    """Serialize ``strategy`` using the standard format produced by ``auto_learner``.
 
     Parameters
     ----------
-    strategy:
-        The strategy object generated by :mod:`auto_learner`.
-    name:
-        Name used for the output files.
+    strategy : Any
+        Strategy object to persist. The object should expose ``training_params``
+        and ``accept_state`` so that it conforms to
+        :class:`TrainableStrategyProtocol`. If ``save`` is implemented it will
+        be used, otherwise ``pickle`` is used as a fallback.
+    name : str
+        Name to use for the generated ``.pkl`` and ``.meta`` files inside
+        :data:`DEFAULT_STRATEGY_DIR`.
     """
 
     path = os.path.join(DEFAULT_STRATEGY_DIR, f"{name}.pkl")
@@ -204,6 +339,23 @@ class StrategyProtocol(Protocol):
         ...
 
 
+class TrainableStrategyProtocol(StrategyProtocol, Protocol):
+    """Strategy interface that exposes training metadata.
+
+    Attributes
+    ----------
+    training_params : Dict[str, Any]
+        Heuristics and metrics used during training.
+    accept_state : Callable[[Dict[str, Any]], bool]
+        Function determining whether a game state should be used for training.
+    """
+
+    training_params: Dict[str, Any]
+
+    def accept_state(self, state: Dict[str, Any]) -> bool:
+        ...
+
+
 class StrategyManager:
     """Manage registration and evaluation of strategies."""
 
@@ -211,7 +363,7 @@ class StrategyManager:
         """Create a manager storing strategies under ``strategies_path``."""
         self.strategies_path = strategies_path
         os.makedirs(self.strategies_path, exist_ok=True)
-        self._strategies: Dict[str, StrategyProtocol | Any] = {}
+        self._strategies: Dict[str, TrainableStrategyProtocol | Any] = {}
         # Mapping of strategy name to class information for loading
         self._strategy_classes: Dict[str, tuple[str, str]] = {}
         # Optional filter parameters controlling training data acceptance
@@ -267,18 +419,27 @@ class StrategyManager:
     def strategy_accepts(self, name: str, state: Dict[str, Any]) -> bool:
         """Return ``True`` if strategy ``name`` should train on ``state``.
 
-        The logic first checks for a ``should_use_state`` method on the strategy
-        instance.  If absent, basic numeric thresholds stored in the filter
-        parameters are applied instead.  Missing parameters default to accepting
-        the state.
+        ``state`` should contain at least ``total_black_stones`` and
+        ``total_white_stones`` keys.  The method first tries the strategy's
+        ``accept_state`` callable, falling back to ``should_use_state`` or simple
+        heuristics stored in filter parameters.  All callbacks are wrapped in
+        ``try``/``except`` blocks so that a misbehaving strategy cannot crash the
+        manager.
         """
 
         strat = self._strategies.get(name)
-        if strat is not None and hasattr(strat, "should_use_state"):
-            try:
-                return bool(strat.should_use_state(state))  # type: ignore[attr-defined]
-            except Exception:
-                return True
+        if strat is not None:
+            callback = getattr(strat, "accept_state", None)
+            if callable(callback):
+                try:
+                    return bool(callback(state))
+                except Exception as exc:
+                    logger.error("accept_state for '%s' failed: %s", name, exc)
+            if hasattr(strat, "should_use_state"):
+                try:
+                    return bool(strat.should_use_state(state))  # type: ignore[attr-defined]
+                except Exception as exc:
+                    logger.error("should_use_state for '%s' failed: %s", name, exc)
         params = self._filters.get(name, {})
         if not params:
             return True
@@ -298,7 +459,7 @@ class StrategyManager:
         self,
         state: Dict[str, Any],
         min_count: int,
-        factory: Callable[[], StrategyProtocol],
+        factory: Callable[[], TrainableStrategyProtocol],
     ) -> None:
         """Create new strategies via ``factory`` if too few accept ``state``."""
 
@@ -339,7 +500,7 @@ class StrategyManager:
             with open(meta_path, "rb") as f:
                 mod_name, cls_name = pickle.load(f)
             module = importlib.import_module(mod_name)
-            cls: Type[StrategyProtocol] = getattr(module, cls_name)
+            cls: Type[TrainableStrategyProtocol] = getattr(module, cls_name)
             strategy = cls.load(path)
             self._strategy_classes[name] = (mod_name, cls_name)
         else:
@@ -377,7 +538,7 @@ class StrategyManager:
     # ------------------------------------------------------------------
     # New public API
     # ------------------------------------------------------------------
-    def register_strategy(self, name: str, strategy: StrategyProtocol) -> None:
+    def register_strategy(self, name: str, strategy: TrainableStrategyProtocol) -> None:
         """Register a strategy instance under ``name``."""
         self._strategies[name] = strategy
 
