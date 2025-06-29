@@ -11,9 +11,20 @@ from __future__ import annotations
 
 import os
 import pickle
+import logging
 from collections import Counter
-from typing import Any, Callable, Dict, Iterable, List, Optional, Protocol, Type
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Protocol,
+    Type,
+)
 import importlib
+from types import SimpleNamespace
 
 # ---------------------------------------------------------------------------
 # Module level helpers and utilities
@@ -23,6 +34,26 @@ import importlib
 # filter parameters and pickled models here by default.
 DEFAULT_STRATEGY_DIR = os.path.join("data", "models", "strategies")
 
+# module level logger
+logger = logging.getLogger(__name__)
+
+
+def create_strategy() -> Any:
+    """Return a minimal placeholder strategy instance.
+
+    The returned object exposes ``training_params`` and ``accept_state`` so
+    that monitoring utilities can treat it like a fully fledged strategy until
+    a real model is trained.
+    """
+
+    params: Dict[str, Any] = {"stable": False}
+
+    def accept_state(_: Dict[str, Any]) -> bool:
+        return True
+
+    strat = SimpleNamespace(training_params=params, accept_state=accept_state)
+    return strat
+
 
 def load_all_strategies(directory: str) -> Dict[str, Any]:
     """Load every serialized strategy found in ``directory``.
@@ -30,9 +61,9 @@ def load_all_strategies(directory: str) -> Dict[str, Any]:
     The function looks for ``.pkl`` files produced by :func:`save_strategy` and
     reconstructs each strategy object.  If a corresponding ``.flt`` file exists
     the filter parameters are loaded and attached to the strategy under the
-    ``training_params`` attribute.  An ``accept_state`` callable is provided so
-    that callers can easily determine whether a specific game state should be
-    used for further training of that strategy.
+    ``training_params`` attribute.  The associated ``accept_state`` callable is
+    added both to the parameters dictionary and to the strategy instance so that
+    callers can query it directly.
 
     Parameters
     ----------
@@ -48,6 +79,7 @@ def load_all_strategies(directory: str) -> Dict[str, Any]:
 
     loaded: Dict[str, Any] = {}
     if not os.path.isdir(directory):
+        logger.warning("Strategy directory '%s' not found", directory)
         return loaded
 
     for fname in os.listdir(directory):
@@ -58,15 +90,19 @@ def load_all_strategies(directory: str) -> Dict[str, Any]:
         # --- load the core strategy object ---------------------------------
         strategy_path = os.path.join(directory, fname)
         meta_path = os.path.join(directory, f"{name}.meta")
-        if os.path.exists(meta_path):
-            with open(meta_path, "rb") as f:
-                mod_name, cls_name = pickle.load(f)
-            module = importlib.import_module(mod_name)
-            cls: Type[StrategyProtocol] = getattr(module, cls_name)
-            strategy = cls.load(strategy_path)
-        else:
-            with open(strategy_path, "rb") as f:
-                strategy = pickle.load(f)
+        try:
+            if os.path.exists(meta_path):
+                with open(meta_path, "rb") as f:
+                    mod_name, cls_name = pickle.load(f)
+                module = importlib.import_module(mod_name)
+                cls: Type[TrainableStrategyProtocol] = getattr(module, cls_name)
+                strategy = cls.load(strategy_path)
+            else:
+                with open(strategy_path, "rb") as f:
+                    strategy = pickle.load(f)
+        except Exception as exc:
+            logger.warning("Could not load strategy '%s': %s", name, exc)
+            continue
 
         # --- load optional filter parameters -------------------------------
         filter_path = os.path.join(directory, f"{name}.flt")
@@ -75,8 +111,15 @@ def load_all_strategies(directory: str) -> Dict[str, Any]:
             with open(filter_path, "rb") as f:
                 try:
                     params = pickle.load(f)
-                except Exception:
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to load filter parameters for '%s': %s",
+                        name,
+                        exc,
+                    )
                     params = {}
+        else:
+            logger.debug("Filter file for '%s' not found", name)
 
         def accept_state(state: Dict[str, Any], params=params) -> bool:
             """Return ``True`` if ``state`` should be used for training."""
@@ -92,9 +135,10 @@ def load_all_strategies(directory: str) -> Dict[str, Any]:
 
         params["accept_state"] = accept_state
 
-        # expose params on the strategy for external checks
+        # expose params and callable directly on the strategy object
         try:
             setattr(strategy, "training_params", params)
+            setattr(strategy, "accept_state", accept_state)
         except Exception:
             pass
 
@@ -121,8 +165,8 @@ def monitor_and_manage_strategies(
     -------
     Dict[str, Any]
         Possibly updated ``strategies`` dictionary.  New placeholder strategies
-        are inserted if required so that at least ``acceptance_threshold``
-        entries can receive training data.
+        created via :func:`create_strategy` are inserted if required so that at
+        least ``acceptance_threshold`` entries can receive training data.
     """
 
     capable = []
@@ -135,7 +179,7 @@ def monitor_and_manage_strategies(
     next_idx = 1
     while count < acceptance_threshold:
         new_name = f"strategy_{len(strategies) + next_idx}"
-        strategies[new_name] = {}
+        strategies[new_name] = create_strategy()
         count += 1
         next_idx += 1
 
@@ -199,7 +243,7 @@ def load_strategy(name: str) -> Any:
         with open(meta_path, "rb") as f:
             mod_name, cls_name = pickle.load(f)
         module = importlib.import_module(mod_name)
-        cls: Type[StrategyProtocol] = getattr(module, cls_name)
+        cls: Type[TrainableStrategyProtocol] = getattr(module, cls_name)
         return cls.load(path)
 
     with open(path, "rb") as f:
@@ -213,7 +257,7 @@ def save_strategy(strategy: Any, name: str) -> None:
     ----------
     strategy : Any
         Strategy object to persist.  The object may implement a ``save`` method
-        compatible with :class:`StrategyProtocol`.
+        compatible with :class:`TrainableStrategyProtocol`.
     name : str
         Name to use for the generated ``.pkl`` and ``.meta`` files inside
         :data:`DEFAULT_STRATEGY_DIR`.
@@ -250,6 +294,23 @@ class StrategyProtocol(Protocol):
         ...
 
 
+class TrainableStrategyProtocol(StrategyProtocol, Protocol):
+    """Strategy interface that exposes training metadata.
+
+    Attributes
+    ----------
+    training_params : Dict[str, Any]
+        Heuristics and metrics used during training.
+    accept_state : Callable[[Dict[str, Any]], bool]
+        Function determining whether a game state should be used for training.
+    """
+
+    training_params: Dict[str, Any]
+
+    def accept_state(self, state: Dict[str, Any]) -> bool:
+        ...
+
+
 class StrategyManager:
     """Manage registration and evaluation of strategies."""
 
@@ -257,7 +318,7 @@ class StrategyManager:
         """Create a manager storing strategies under ``strategies_path``."""
         self.strategies_path = strategies_path
         os.makedirs(self.strategies_path, exist_ok=True)
-        self._strategies: Dict[str, StrategyProtocol | Any] = {}
+        self._strategies: Dict[str, TrainableStrategyProtocol | Any] = {}
         # Mapping of strategy name to class information for loading
         self._strategy_classes: Dict[str, tuple[str, str]] = {}
         # Optional filter parameters controlling training data acceptance
@@ -344,7 +405,7 @@ class StrategyManager:
         self,
         state: Dict[str, Any],
         min_count: int,
-        factory: Callable[[], StrategyProtocol],
+        factory: Callable[[], TrainableStrategyProtocol],
     ) -> None:
         """Create new strategies via ``factory`` if too few accept ``state``."""
 
@@ -385,7 +446,7 @@ class StrategyManager:
             with open(meta_path, "rb") as f:
                 mod_name, cls_name = pickle.load(f)
             module = importlib.import_module(mod_name)
-            cls: Type[StrategyProtocol] = getattr(module, cls_name)
+            cls: Type[TrainableStrategyProtocol] = getattr(module, cls_name)
             strategy = cls.load(path)
             self._strategy_classes[name] = (mod_name, cls_name)
         else:
@@ -423,7 +484,7 @@ class StrategyManager:
     # ------------------------------------------------------------------
     # New public API
     # ------------------------------------------------------------------
-    def register_strategy(self, name: str, strategy: StrategyProtocol) -> None:
+    def register_strategy(self, name: str, strategy: TrainableStrategyProtocol) -> None:
         """Register a strategy instance under ``name``."""
         self._strategies[name] = strategy
 
