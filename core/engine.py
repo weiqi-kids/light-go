@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Iterable
 
 from input import sgf_to_input
 from core.strategy_manager import StrategyManager
@@ -73,6 +73,40 @@ class Engine:
         first = next(iter(preds))
         return preds[first]
 
+    def _train_batches(
+        self,
+        batches: Iterable[List[Dict[str, Any]]],
+        data_dir: str,
+        output_dir: str,
+    ) -> str:
+        """Internal helper to train ``GoAIModel`` over ``batches`` sequentially."""
+        strategy_name = self.auto_learner.train_and_save(data_dir)
+        model = GoAIModel()
+        for batch in batches:
+            model.train(batch)
+        os.makedirs(output_dir, exist_ok=True)
+        model_path = os.path.join(output_dir, f"{strategy_name}.pt")
+        model.save_pretrained(model_path)
+        return strategy_name
+
+    def train_npz_directory(self, data_dir: str, output_dir: str) -> str:
+        """Train directly from a directory of ``.npz`` KataGo files."""
+        import numpy as np
+        from input.katago_to_input import process_katago_lines
+
+        def _gen() -> Iterable[List[Dict[str, Any]]]:
+            for fname in os.listdir(data_dir):
+                if not fname.endswith('.npz'):
+                    continue
+                path = os.path.join(data_dir, fname)
+                npz = np.load(path, allow_pickle=True)
+                for key in npz.files:
+                    data = npz[key]
+                    lines = data.tolist() if isinstance(data, np.ndarray) else list(data)
+                    yield process_katago_lines(lines)
+
+        return self._train_batches(_gen(), data_dir, output_dir)
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -94,13 +128,7 @@ class Engine:
             The name of the newly created strategy.
         """
         converted = self._convert_directory(data_dir)
-        strategy_name = self.auto_learner.train_and_save(data_dir)
-        model = GoAIModel()
-        model.train(converted)
-        os.makedirs(output_dir, exist_ok=True)
-        model_path = os.path.join(output_dir, f"{strategy_name}.pt")
-        model.save_pretrained(model_path)
-        return strategy_name
+        return self._train_batches([converted], data_dir, output_dir)
 
     def evaluate(self, data_dir: str, output_dir: str, **settings: Any) -> Dict[str, Any]:
         """Evaluate existing strategies on ``data_dir``.

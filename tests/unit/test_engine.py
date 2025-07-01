@@ -52,6 +52,35 @@ def test_engine_train(tmp_path: pathlib.Path):
         assert name == 's1'
 
 
+def test_engine_train_npz(tmp_path: pathlib.Path):
+    engine, sm_inst, al_inst, _, _ = _create_engine(tmp_path)
+    data_dir = tmp_path / 'data'
+    out_dir = tmp_path / 'out'
+    data_dir.mkdir()
+    out_dir.mkdir()
+    npz_file = data_dir / 'd.npz'
+    npz_file.touch()
+
+    with patch('numpy.load') as np_load, \
+         patch('core.engine.GoAIModel') as MockModel, \
+         patch('input.katago_to_input.process_katago_lines', return_value=['d1']) as proc:
+        class Dummy:
+            files = ['arr']
+            def __getitem__(self, k):
+                return ['{}']
+        np_load.return_value = Dummy()
+        model_inst = Mock()
+        MockModel.return_value = model_inst
+        al_inst.train_and_save.return_value = 's1'
+
+        name = engine.train_npz_directory(str(data_dir), str(out_dir))
+
+        proc.assert_called()
+        model_inst.train.assert_called_with(['d1'])
+        model_inst.save_pretrained.assert_called_once_with(os.path.join(str(out_dir), 's1.pt'))
+        assert name == 's1'
+
+
 def test_engine_evaluate(tmp_path: pathlib.Path):
     engine, sm_inst, al_inst, _, _ = _create_engine(tmp_path)
     data_dir = tmp_path / 'data'

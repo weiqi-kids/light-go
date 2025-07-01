@@ -1,6 +1,7 @@
 import pathlib
 import sys
 from unittest.mock import MagicMock, patch
+import numpy as np
 
 # Put project root on sys.path so we can load the CLI module
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -26,7 +27,9 @@ def test_argparse_train_calls_engine_train(tmp_path, capsys):
     engine_mock = MagicMock()
     engine_mock.strategy_manager.strategies_path = str(tmp_path)
     engine_mock.train.return_value = 's1'
-    with patch.object(sys, 'argv', argv), patch('cli_main.Engine', return_value=engine_mock) as engine_cls:
+    with patch.object(sys, 'argv', argv), \
+         patch('cli_main.detect_data_type', return_value='sgf'), \
+         patch('cli_main.Engine', return_value=engine_mock) as engine_cls:
         cli_main.main()
         engine_cls.assert_called_with(str(tmp_path))
         engine_mock.train.assert_called_with('data_dir', str(tmp_path))
@@ -81,6 +84,7 @@ def test_exception_logged(tmp_path):
     engine_mock.strategy_manager.strategies_path = str(tmp_path)
     engine_mock.train.side_effect = RuntimeError('boom')
     with patch.object(sys, 'argv', argv), \
+         patch('cli_main.detect_data_type', return_value='sgf'), \
          patch('cli_main.Engine', return_value=engine_mock), \
          patch('logging.exception') as log_exc:
         cli_main.main()
@@ -99,6 +103,38 @@ def test_strategy_argument_loads_strategy(tmp_path):
     engine_mock = MagicMock()
     engine_mock.strategy_manager.strategies_path = str(tmp_path)
     engine_mock.train.return_value = 's1'
-    with patch.object(sys, 'argv', argv), patch('cli_main.Engine', return_value=engine_mock):
+    with patch.object(sys, 'argv', argv), \
+         patch('cli_main.detect_data_type', return_value='sgf'), \
+         patch('cli_main.Engine', return_value=engine_mock):
         cli_main.main()
         engine_mock.load_strategy.assert_called_with('strat1')
+
+
+def test_detect_data_type(tmp_path):
+    sgf_file = tmp_path / 'a.sgf'
+    sgf_file.write_text('')
+    assert cli_main.detect_data_type(str(tmp_path)) == 'sgf'
+    sgf_file.unlink()
+    npz_path = tmp_path / 'b.npz'
+    np.savez(npz_path, data=['{}'])
+    assert cli_main.detect_data_type(str(tmp_path)) == 'npz'
+    (tmp_path / 'c.sgf').write_text('')
+    with pytest.raises(ValueError):
+        cli_main.detect_data_type(str(tmp_path))
+
+
+def test_argparse_train_npz_calls_engine(tmp_path, capsys):
+    argv = [
+        'main.py', '--mode', 'train', '--data', str(tmp_path), '--output', str(tmp_path / 'out')
+    ]
+    (tmp_path / 'out').mkdir()
+    np.savez(tmp_path / 'd.npz', data=['{}'])
+    engine_mock = MagicMock()
+    engine_mock.strategy_manager.strategies_path = str(tmp_path)
+    engine_mock.train_npz_directory.return_value = 's1'
+    with patch.object(sys, 'argv', argv), \
+         patch('cli_main.Engine', return_value=engine_mock) as engine_cls:
+        cli_main.main()
+        engine_cls.assert_called_with(str(tmp_path / 'out'))
+        engine_mock.train_npz_directory.assert_called_with(str(tmp_path), str(tmp_path / 'out'))
+        assert capsys.readouterr().out.strip().endswith('s1.pkl')
