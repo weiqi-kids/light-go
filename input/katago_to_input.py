@@ -2,6 +2,7 @@
 
 import sys
 import json
+from typing import Iterable, List, Dict, Any
 
 SGF_CHARS = 'ABCDEFGHJKLMNOPQRST'
 
@@ -20,96 +21,103 @@ def katago_to_coords(move_str, board_size_y):
     except (ValueError, IndexError):
         return None
 
-def process_katago_file(filepath):
+
+def process_katago_lines(lines: Iterable[str]) -> List[Dict[str, Any]]:
+    """Convert iterable KataGo JSON strings to the unified format."""
+
+    all_processed_moves: List[Dict[str, Any]] = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            katago_move = json.loads(line)
+        except json.JSONDecodeError:
+            # Skip lines that are not valid JSON
+            continue
+
+        board = katago_move.get('board', [])
+        liberties = katago_move.get('liberties', [])
+        board_x = katago_move.get('boardXSize', 19)
+        board_y = katago_move.get('boardYSize', 19)
+
+        liberty_list = []
+        if board and liberties and len(board) == len(liberties):
+            for i, stone in enumerate(board):
+                if stone != 'E':
+                    x = i % board_x
+                    # Apply y-inversion here
+                    y = board_y - 1 - (i // board_x)
+                    lib_count = liberties[i]
+                    if stone == 'W':
+                        lib_count = -lib_count
+                    liberty_list.append((x, y, lib_count))
+
+        forbidden_list = []
+        illegal_moves = katago_move.get('illegalMoves', [])
+        for move_str in illegal_moves:
+            coords = katago_to_coords(move_str, board_y)
+            if coords:
+                forbidden_list.append(coords)
+
+        metadata = katago_move.copy()
+
+        rules_data = katago_move.get('rules', {})
+        metadata['rules'] = {
+            'ruleset': rules_data.get('rules'),
+            'komi': rules_data.get('komi'),
+            'board_size': board_x,
+            'handicap': rules_data.get('handicap', 0)
+        }
+
+        metadata['capture'] = {
+            'black': katago_move.get('blackCaptures', 0),
+            'white': katago_move.get('whiteCaptures', 0)
+        }
+
+        metadata['next_move'] = 'black' if katago_move.get('pla') == 'B' else 'white'
+
+        metadata['step'] = katago_move.get('moves', [])
+
+        metadata['time_control'] = {
+            'main_time_seconds': rules_data.get('mainTime'),
+            'byo_yomi': {
+                'period_time_seconds': rules_data.get('byoYomiTime'),
+                'periods': rules_data.get('byoYomiPeriods')
+            }
+        }
+
+        time_list = []
+        if 'bTime' in katago_move and 'bPeriodsLeft' in katago_move:
+            time_list.append({
+                'player': 'black',
+                'main_time_seconds': katago_move.get('bTime'),
+                'periods': katago_move.get('bPeriodsLeft')
+            })
+        if 'wTime' in katago_move and 'wPeriodsLeft' in katago_move:
+            time_list.append({
+                'player': 'white',
+                'main_time_seconds': katago_move.get('wTime'),
+                'periods': katago_move.get('wPeriodsLeft')
+            })
+        metadata['time'] = time_list
+
+        processed_move = {
+            'liberty': liberty_list,
+            'forbidden': forbidden_list,
+            'metadata': metadata
+        }
+        all_processed_moves.append(processed_move)
+
+    return all_processed_moves
+
+def process_katago_file(filepath: str) -> List[Dict[str, Any]]:
     """Parse a KataGo JSONL file and return converted move data."""
-    all_processed_moves = []
     try:
         with open(filepath, 'r') as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    katago_move = json.loads(line)
-                except json.JSONDecodeError:
-                    # Skip lines that are not valid JSON
-                    continue
-
-                board = katago_move.get('board', [])
-                liberties = katago_move.get('liberties', [])
-                board_x = katago_move.get('boardXSize', 19)
-                board_y = katago_move.get('boardYSize', 19)
-
-                liberty_list = []
-                if board and liberties and len(board) == len(liberties):
-                    for i, stone in enumerate(board):
-                        if stone != 'E':
-                            x = i % board_x
-                            y = board_y - 1 - (i // board_x) # Apply y-inversion here
-                            lib_count = liberties[i]
-                            if stone == 'W':
-                                lib_count = -lib_count
-                            liberty_list.append((x, y, lib_count))
-
-                forbidden_list = []
-                illegal_moves = katago_move.get('illegalMoves', [])
-                for move_str in illegal_moves:
-                    coords = katago_to_coords(move_str, board_y)
-                    if coords:
-                        forbidden_list.append(coords)
-
-                metadata = katago_move.copy()
-                
-                rules_data = katago_move.get('rules', {})
-                metadata['rules'] = {
-                    'ruleset': rules_data.get('rules'),
-                    'komi': rules_data.get('komi'),
-                    'board_size': board_x,
-                    'handicap': rules_data.get('handicap', 0)
-                }
-
-                metadata['capture'] = {
-                    'black': katago_move.get('blackCaptures', 0),
-                    'white': katago_move.get('whiteCaptures', 0)
-                }
-
-                metadata['next_move'] = 'black' if katago_move.get('pla') == 'B' else 'white'
-
-                metadata['step'] = katago_move.get('moves', [])
-
-                metadata['time_control'] = {
-                    'main_time_seconds': rules_data.get('mainTime'),
-                    'byo_yomi': {
-                        'period_time_seconds': rules_data.get('byoYomiTime'),
-                        'periods': rules_data.get('byoYomiPeriods')
-                    }
-                }
-
-                time_list = []
-                if 'bTime' in katago_move and 'bPeriodsLeft' in katago_move:
-                    time_list.append({
-                        'player': 'black',
-                        'main_time_seconds': katago_move.get('bTime'),
-                        'periods': katago_move.get('bPeriodsLeft')
-                    })
-                if 'wTime' in katago_move and 'wPeriodsLeft' in katago_move:
-                    time_list.append({
-                        'player': 'white',
-                        'main_time_seconds': katago_move.get('wTime'),
-                        'periods': katago_move.get('wPeriodsLeft')
-                    })
-                metadata['time'] = time_list
-
-                processed_move = {
-                    'liberty': liberty_list,
-                    'forbidden': forbidden_list,
-                    'metadata': metadata
-                }
-                all_processed_moves.append(processed_move)
-
+            return process_katago_lines(f)
     except IOError:
-        pass
-    return all_processed_moves
+        return []
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:

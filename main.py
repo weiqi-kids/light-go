@@ -61,6 +61,13 @@ def _run_train(engine: Engine, data: str, output_dir: str) -> str:
     return strategy
 
 
+def _run_train_npz(engine: Engine, data: str, output_dir: str) -> str:
+    """Run training from NPZ dataset."""
+    strategy = engine.train_npz_directory(data, output_dir)
+    logging.info("Saved strategy %s to %s", strategy, engine.strategy_manager.strategies_path)
+    return strategy
+
+
 def _run_evaluate(engine: Engine, data: str) -> Dict[str, Any]:
     """Run evaluation and return aggregated statistics."""
 
@@ -77,6 +84,22 @@ def _run_play(engine: Engine, sgf_path: str) -> tuple[int, int] | None:
     matrix, metadata, _ = parse_sgf(sgf_path)
     move = engine.decide_move(matrix, metadata["next_move"])
     return move
+
+
+def detect_data_type(path: str) -> str:
+    """Return the data type contained in ``path`` ('sgf' or 'npz')."""
+    if not os.path.isdir(path):
+        raise ValueError(f"{path} is not a directory")
+    files = os.listdir(path)
+    has_sgf = any(f.endswith('.sgf') for f in files)
+    has_npz = any(f.endswith('.npz') for f in files)
+    if has_sgf and has_npz:
+        raise ValueError('Mixed SGF and NPZ files found')
+    if has_sgf:
+        return 'sgf'
+    if has_npz:
+        return 'npz'
+    raise ValueError('No supported data files found')
 
 
 def main() -> None:
@@ -103,7 +126,14 @@ def main() -> None:
         if args.mode == "train":
             if not args.data:
                 parser.error("--data is required for train mode")
-            name = _run_train(engine, args.data, args.output)
+            try:
+                dtype = detect_data_type(args.data)
+            except ValueError as exc:
+                parser.error(str(exc))
+            if dtype == 'sgf':
+                name = _run_train(engine, args.data, args.output)
+            else:
+                name = _run_train_npz(engine, args.data, args.output)
             result_path = os.path.join(args.output, f"{name}.pkl")
             print(result_path)
         elif args.mode == "evaluate":
