@@ -756,42 +756,204 @@ def validate_engine() -> ValidationResult:
 
 
 # ==========================================================================
-# Component 7: MCTS Search (Placeholder)
+# Component 7: MCTS Search
 # ==========================================================================
 def validate_mcts() -> ValidationResult:
-    """Validate MCTS search component (placeholder check)."""
-    print_header("7. MCTS Search (placeholder)")
+    """Validate MCTS search component."""
+    print_header("7. MCTS Search (core/mcts.py)")
     result = ValidationResult("MCTS Search")
 
-    print("\n[Test 1] Check for MCTS implementation")
-    test_input = {"action": "Search for MCTS module"}
+    # Test 1: Import MCTS module
+    print("\n[Test 1] Import MCTS module")
+    test_input = {"action": "Import core.mcts"}
     print_io("Input", test_input)
 
-    # Try to find MCTS implementation
-    mcts_files = []
-    for root, dirs, files in os.walk(os.path.dirname(__file__)):
-        for f in files:
-            if 'mcts' in f.lower() and f.endswith('.py'):
-                mcts_files.append(os.path.join(root, f))
+    try:
+        from core.mcts import MCTS, MCTSNode, GoGameState, mcts_search
+        print_io("Output", "Successfully imported MCTS, MCTSNode, GoGameState, mcts_search")
+        result.add_pass("MCTS module import")
+        print("  Status: PASS")
+    except ImportError as e:
+        result.add_fail("MCTS import", str(e))
+        print(f"  Status: FAIL - {e}")
+        return result
 
-    print_io("Output found files", mcts_files if mcts_files else "None")
+    # Test 2: GoGameState - legal move generation
+    print("\n[Test 2] GoGameState.get_legal_moves()")
+    board = [
+        [0, 0, 0, 0, 0],
+        [0, 1, 0, 0, 0],
+        [0, 0, 0, 0, 0],
+        [0, 0, 0, -1, 0],
+        [0, 0, 0, 0, 0],
+    ]
+    test_input = {"board": "5x5 with black at (1,1) and white at (3,3)"}
+    print_io("Input", test_input)
 
-    if mcts_files:
-        result.add_pass("MCTS module found")
-        print("  Status: PASS - MCTS implementation exists")
-    else:
-        # Check if Engine has any MCTS-like functionality
-        from core.engine import Engine
-        has_mcts = hasattr(Engine, 'mcts_search') or hasattr(Engine, 'monte_carlo')
-        print_io("Output Engine MCTS method", has_mcts)
+    try:
+        state = GoGameState(board, current_color=1)
+        legal = state.get_legal_moves()
+        print_io("Output legal move count", len(legal))
+        print_io("Output sample moves", legal[:5])
 
-        if has_mcts:
-            result.add_pass("MCTS functionality in Engine")
+        # Should have 23 legal moves (25 - 2 stones)
+        if len(legal) == 23:
+            result.add_pass("get_legal_moves() returns correct count")
             print("  Status: PASS")
         else:
-            result.add_fail("MCTS", "Not implemented - using naive decide_move() instead")
-            print("  Status: NOT IMPLEMENTED")
-            print("  Note: Current system uses Engine.decide_move() as placeholder")
+            result.add_fail("get_legal_moves()", f"Expected 23, got {len(legal)}")
+            print("  Status: FAIL")
+    except Exception as e:
+        result.add_fail("get_legal_moves()", str(e))
+        print(f"  Status: FAIL - {e}")
+
+    # Test 3: GoGameState - move execution with capture
+    print("\n[Test 3] GoGameState.play_move() with capture")
+    # Set up a capture scenario
+    capture_board = [
+        [0, 1, 0, 0, 0],
+        [1, -1, 1, 0, 0],
+        [0, 1, 0, 0, 0],
+        [0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0],
+    ]
+    test_input = {"board": "5x5 with white stone surrounded by black", "move": "None (pass check)"}
+    print_io("Input", test_input)
+
+    try:
+        state = GoGameState(capture_board, current_color=1)
+        # White stone at (1,1) is already captured - verify board state
+        # Actually white has no liberties, let's check a real capture scenario
+        # Let me create a proper capture setup where playing a move captures
+
+        # Scenario: white at (1,1) surrounded by black at (0,1), (2,1), (1,0), need (1,2) to capture
+        capture_board2 = [
+            [0, 1, 0, 0, 0],
+            [1, -1, 0, 0, 0],
+            [0, 1, 0, 0, 0],
+            [0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0],
+        ]
+        state2 = GoGameState(capture_board2, current_color=1)
+        # Black plays at (2, 1) to capture
+        new_state = state2.play_move((2, 1))
+        print_io("Output board[1][1] after capture", new_state.board[1][1])
+
+        if new_state.board[1][1] == 0:  # White stone should be captured
+            result.add_pass("play_move() correctly handles capture")
+            print("  Status: PASS")
+        else:
+            result.add_fail("play_move() capture", f"Stone not captured, value={new_state.board[1][1]}")
+            print("  Status: FAIL")
+    except Exception as e:
+        result.add_fail("play_move() capture", str(e))
+        print(f"  Status: FAIL - {e}")
+
+    # Test 4: MCTSNode UCB1 calculation
+    print("\n[Test 4] MCTSNode.ucb1() calculation")
+    test_input = {"visits": 10, "wins": 6, "parent_visits": 100}
+    print_io("Input", test_input)
+
+    try:
+        parent = MCTSNode(visits=100)
+        child = MCTSNode(parent=parent, visits=10, wins=6)
+        ucb1 = child.ucb1(exploration=1.414)
+        print_io("Output UCB1 value", round(ucb1, 4))
+
+        # UCB1 = 6/10 + 1.414 * sqrt(ln(100)/10) ≈ 0.6 + 1.414 * 0.678 ≈ 1.56
+        if 1.5 < ucb1 < 1.7:
+            result.add_pass("ucb1() calculates correct value")
+            print("  Status: PASS")
+        else:
+            result.add_fail("ucb1()", f"UCB1 value out of expected range: {ucb1}")
+            print("  Status: FAIL")
+    except Exception as e:
+        result.add_fail("ucb1()", str(e))
+        print(f"  Status: FAIL - {e}")
+
+    # Test 5: MCTS search on small board
+    print("\n[Test 5] MCTS.search() on 5x5 board")
+    small_board = [[0]*5 for _ in range(5)]
+    test_input = {"board": "5x5 empty board", "iterations": 50}
+    print_io("Input", test_input)
+
+    try:
+        mcts = MCTS(iterations=50)
+        move = mcts.search(small_board, color=1)
+        print_io("Output move", move)
+
+        if move is not None and 0 <= move[0] < 5 and 0 <= move[1] < 5:
+            result.add_pass("MCTS.search() returns valid move")
+            print("  Status: PASS")
+        else:
+            result.add_fail("MCTS.search()", f"Invalid move: {move}")
+            print("  Status: FAIL")
+    except Exception as e:
+        result.add_fail("MCTS.search()", str(e))
+        print(f"  Status: FAIL - {e}")
+
+    # Test 6: mcts_search convenience function
+    print("\n[Test 6] mcts_search() convenience function")
+    test_input = {"board": "5x5 empty", "color": 1, "iterations": 30}
+    print_io("Input", test_input)
+
+    try:
+        move = mcts_search(small_board, color=1, iterations=30)
+        print_io("Output move", move)
+
+        if move is not None:
+            result.add_pass("mcts_search() returns move")
+            print("  Status: PASS")
+        else:
+            result.add_fail("mcts_search()", "Returned None for non-empty legal moves")
+            print("  Status: FAIL")
+    except Exception as e:
+        result.add_fail("mcts_search()", str(e))
+        print(f"  Status: FAIL - {e}")
+
+    # Test 7: MCTS move probabilities
+    print("\n[Test 7] MCTS.get_move_probabilities()")
+    test_input = {"board": "5x5 empty", "iterations": 50}
+    print_io("Input", test_input)
+
+    try:
+        mcts = MCTS(iterations=50)
+        probs = mcts.get_move_probabilities(small_board, color=1)
+        print_io("Output probability count", len(probs))
+        print_io("Output sum of probabilities", round(sum(probs.values()), 2))
+
+        # Probabilities should sum to ~1.0
+        if len(probs) > 0 and 0.95 <= sum(probs.values()) <= 1.05:
+            result.add_pass("get_move_probabilities() returns valid distribution")
+            print("  Status: PASS")
+        else:
+            result.add_fail("get_move_probabilities()", f"Invalid probability distribution")
+            print("  Status: FAIL")
+    except Exception as e:
+        result.add_fail("get_move_probabilities()", str(e))
+        print(f"  Status: FAIL - {e}")
+
+    # Test 8: Engine integration
+    print("\n[Test 8] Engine.mcts_move() integration")
+    test_input = {"board": "5x5 empty", "color": "black", "iterations": 30}
+    print_io("Input", test_input)
+
+    try:
+        from core.engine import Engine
+        with tempfile.TemporaryDirectory() as tmpdir:
+            engine = Engine(tmpdir)
+            move = engine.mcts_move(small_board, "black", iterations=30)
+            print_io("Output move", move)
+
+            if move is not None and 0 <= move[0] < 5 and 0 <= move[1] < 5:
+                result.add_pass("Engine.mcts_move() integration works")
+                print("  Status: PASS")
+            else:
+                result.add_fail("Engine.mcts_move()", f"Invalid move: {move}")
+                print("  Status: FAIL")
+    except Exception as e:
+        result.add_fail("Engine.mcts_move()", str(e))
+        print(f"  Status: FAIL - {e}")
 
     return result
 

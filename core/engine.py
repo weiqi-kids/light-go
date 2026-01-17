@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Iterable
 from input import sgf_to_input
 from core.strategy_manager import StrategyManager
 from core.auto_learner import AutoLearner
+from core.mcts import MCTS, mcts_search
 
 try:  # hf_models may not be present in lightweight environments
     from hf_models.modeling_go_ai import GoAIModel
@@ -174,28 +175,107 @@ class Engine:
         return self.strategy_manager.load_strategy(name)
 
     # ------------------------------------------------------------------
-    def decide_move(self, board: List[List[int]], color: str) -> tuple[int, int] | None:
-        """Return a very naive move decision for ``board``.
+    def decide_move(
+        self,
+        board: List[List[int]],
+        color: str,
+        use_mcts: bool = True,
+        mcts_iterations: int = 100,
+    ) -> tuple[int, int] | None:
+        """Return the best move for ``board`` using MCTS or naive fallback.
 
         Parameters
         ----------
         board:
-            A matrix of integers where ``0`` denotes an empty position.
+            A matrix of integers where ``0`` denotes an empty position,
+            ``1`` denotes black, ``-1`` denotes white.
         color:
-            Unused placeholder for future logic.
+            The color to play ("black" or "white").
+        use_mcts:
+            If True, use MCTS search. If False, use naive first-empty fallback.
+        mcts_iterations:
+            Number of MCTS iterations (only used if use_mcts=True).
 
         Returns
         -------
         tuple[int, int] | None
-            Coordinates of the first empty point, or ``None`` if the board is
-            full.
+            Coordinates ``(x, y)`` of the best move, or ``None`` if the board
+            is full or player should pass.
         """
+        if use_mcts:
+            color_int = 1 if color.lower().startswith("b") else -1
+            return mcts_search(board, color=color_int, iterations=mcts_iterations)
 
+        # Naive fallback: return first empty position
         for y, row in enumerate(board):
             for x, val in enumerate(row):
                 if val == 0:
                     return (x, y)
         return None
+
+    def mcts_move(
+        self,
+        board: List[List[int]],
+        color: str,
+        iterations: int = 1000,
+        komi: float = 7.5,
+    ) -> tuple[int, int] | None:
+        """Find best move using Monte Carlo Tree Search.
+
+        Parameters
+        ----------
+        board:
+            Board state (0=empty, 1=black, -1=white).
+        color:
+            Color to play ("black" or "white").
+        iterations:
+            Number of MCTS iterations.
+        komi:
+            Komi value for scoring.
+
+        Returns
+        -------
+        tuple[int, int] | None
+            Best move coordinates or None for pass.
+        """
+        color_int = 1 if color.lower().startswith("b") else -1
+        mcts = MCTS(iterations=iterations)
+        return mcts.search(board, color=color_int, komi=komi)
+
+    def mcts_move_with_probabilities(
+        self,
+        board: List[List[int]],
+        color: str,
+        iterations: int = 1000,
+        komi: float = 7.5,
+    ) -> tuple[tuple[int, int] | None, Dict[tuple[int, int], float]]:
+        """Find best move and return move probability distribution.
+
+        This is useful for training neural networks with MCTS policy targets.
+
+        Parameters
+        ----------
+        board:
+            Board state.
+        color:
+            Color to play.
+        iterations:
+            MCTS iterations.
+        komi:
+            Komi value.
+
+        Returns
+        -------
+        tuple[Move | None, dict[Move, float]]
+            Best move and dictionary mapping moves to visit probabilities.
+        """
+        color_int = 1 if color.lower().startswith("b") else -1
+        mcts = MCTS(iterations=iterations)
+        probs = mcts.get_move_probabilities(board, color=color_int, komi=komi)
+        if not probs:
+            return None, {}
+        best_move = max(probs.keys(), key=lambda m: probs[m])
+        return best_move, probs
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +285,7 @@ class Engine:
 _engine_instance: "Engine" | None = None
 
 
-__all__ = ["Engine", "predict"]
+__all__ = ["Engine", "predict", "MCTS", "mcts_search"]
 
 
 def predict(input_data: Any) -> Any:
