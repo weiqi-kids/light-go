@@ -10,6 +10,9 @@ from typing import Any, Dict, List, Tuple
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+from core.strategy_manager import StrategyManager
+from core.auto_learner import AutoLearner
+
 Board = List[List[int]]
 
 
@@ -114,6 +117,18 @@ def strategy_manager_with_strategies(strategy_manager, mock_strategy):
     strategy_manager.register_strategy("s2", mock_strategy(prediction=(3, 3)))
     strategy_manager.register_strategy("s3", mock_strategy(prediction=(4, 4)))
     return strategy_manager
+
+
+@pytest.fixture
+def strategy_manager(temp_dir) -> StrategyManager:
+    """Return a StrategyManager with a temporary directory."""
+    return StrategyManager(temp_dir)
+
+
+@pytest.fixture
+def auto_learner(strategy_manager) -> AutoLearner:
+    """Return an AutoLearner with a StrategyManager."""
+    return AutoLearner(strategy_manager)
 
 
 @pytest.fixture
