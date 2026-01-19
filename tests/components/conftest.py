@@ -5,12 +5,115 @@ import os
 import sys
 import tempfile
 import pytest
-from typing import List, Tuple
+from typing import Any, Dict, List, Tuple
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 Board = List[List[int]]
+
+
+# ---------------------------------------------------------------------------
+# Strategy Manager Fixtures
+# ---------------------------------------------------------------------------
+
+class MockStrategy:
+    """Mock strategy for testing StrategyManager.
+
+    Implements the TrainableStrategyProtocol interface with configurable
+    predict behavior and state acceptance logic.
+    """
+
+    def __init__(
+        self,
+        prediction: Any = None,
+        stable: bool = False,
+        accept_all: bool = True,
+        min_stones: int = 0,
+    ):
+        self.prediction = prediction
+        self.training_params: Dict[str, Any] = {
+            "stable": stable,
+            "min_stones": min_stones,
+        }
+        self._accept_all = accept_all
+        self._min_stones = min_stones
+
+    def predict(self, input_data: Any) -> Any:
+        """Return the configured prediction."""
+        return self.prediction
+
+    def accept_state(self, state: Dict[str, Any]) -> bool:
+        """Check if this strategy should accept the given state."""
+        if self._accept_all:
+            return True
+        stones = state.get("total_black_stones", 0) + state.get("total_white_stones", 0)
+        return stones >= self._min_stones
+
+    def save(self, path: str) -> None:
+        """Save strategy to path."""
+        import pickle
+        with open(path, "wb") as f:
+            pickle.dump(self, f)
+
+    @classmethod
+    def load(cls, path: str) -> "MockStrategy":
+        """Load strategy from path."""
+        import pickle
+        with open(path, "rb") as f:
+            return pickle.load(f)
+
+
+class MockMetaModel:
+    """Mock meta model for testing meta convergence."""
+
+    def __init__(self, aggregation: str = "first"):
+        self.aggregation = aggregation
+
+    def predict(self, results: Dict[str, Any]) -> Any:
+        """Aggregate results from multiple strategies."""
+        if not results:
+            return None
+        values = list(results.values())
+        if self.aggregation == "first":
+            return values[0]
+        elif self.aggregation == "last":
+            return values[-1]
+        return values[0]
+
+
+@pytest.fixture
+def mock_strategy():
+    """Factory fixture to create MockStrategy instances."""
+    def _create(
+        prediction: Any = None,
+        stable: bool = False,
+        accept_all: bool = True,
+        min_stones: int = 0,
+    ) -> MockStrategy:
+        return MockStrategy(
+            prediction=prediction,
+            stable=stable,
+            accept_all=accept_all,
+            min_stones=min_stones,
+        )
+    return _create
+
+
+@pytest.fixture
+def strategy_manager(temp_dir):
+    """Provide a StrategyManager instance with a temporary directory."""
+    from core.strategy_manager import StrategyManager
+    return StrategyManager(temp_dir)
+
+
+@pytest.fixture
+def strategy_manager_with_strategies(strategy_manager, mock_strategy):
+    """Provide a StrategyManager with pre-registered mock strategies."""
+    strategy_manager.register_strategy("s1", mock_strategy(prediction=(3, 3)))
+    strategy_manager.register_strategy("s2", mock_strategy(prediction=(3, 3)))
+    strategy_manager.register_strategy("s3", mock_strategy(prediction=(4, 4)))
+    return strategy_manager
 
 
 @pytest.fixture
