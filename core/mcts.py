@@ -1,27 +1,227 @@
-"""Monte Carlo Tree Search implementation for Go.
+"""Monte Carlo Tree Search implementation using OpenSpiel.
 
-This module implements MCTS with UCB1 selection, providing a complete search
-algorithm that can be used for move selection in Go games.
+This module provides MCTS functionality using Google DeepMind's OpenSpiel library
+for the core algorithm, with fallback to a pure Python implementation when needed.
 
-The algorithm follows the standard MCTS phases:
-1. Selection - traverse tree using UCB1 until reaching unexpanded node
-2. Expansion - add a new child node for an untried move
-3. Simulation - play random moves until game ends (rollout)
-4. Backpropagation - update statistics from leaf to root
+The OpenSpiel integration provides:
+- Battle-tested MCTS implementation from DeepMind
+- Built-in Go game rules with SSK (Situational Superko)
+- Optimized C++ backend for performance
 """
 from __future__ import annotations
 
 import math
 import random
-import copy
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional, Set, Dict, Any
 
-from core.liberty import neighbors, group_and_liberties
-
+# Type aliases
 Board = List[List[int]]
 Move = Tuple[int, int]  # (x, y) coordinates
 
+# Try to import OpenSpiel
+_OPENSPIEL_AVAILABLE = False
+try:
+    import pyspiel
+    from open_spiel.python.algorithms import mcts as openspiel_mcts
+    _OPENSPIEL_AVAILABLE = True
+except ImportError:
+    pyspiel = None  # type: ignore
+    openspiel_mcts = None  # type: ignore
+
+# Import liberty functions for fallback implementation
+from core.liberty import neighbors, group_and_liberties
+
+
+# =============================================================================
+# OpenSpiel Integration
+# =============================================================================
+
+class OpenSpielGoWrapper:
+    """Wrapper for OpenSpiel Go game to provide our API.
+
+    This wrapper handles the conversion between our board representation
+    (List[List[int]]) and OpenSpiel's internal state representation.
+    """
+
+    def __init__(self, board_size: int = 9, komi: float = 7.5):
+        """Initialize OpenSpiel Go game.
+
+        Parameters
+        ----------
+        board_size : int
+            Board size (9, 13, or 19).
+        komi : float
+            Komi value for scoring.
+        """
+        if not _OPENSPIEL_AVAILABLE:
+            raise ImportError("OpenSpiel is not installed. Install with: pip install open-spiel")
+
+        self.board_size = board_size
+        self.komi = komi
+        self._game = pyspiel.load_game(f"go(board_size={board_size},komi={komi})")
+
+    def new_initial_state(self) -> "pyspiel.State":
+        """Create a new initial game state."""
+        return self._game.new_initial_state()
+
+    def action_to_move(self, action: int) -> Move | None:
+        """Convert OpenSpiel action index to (x, y) move.
+
+        OpenSpiel uses action = y * board_size + x for regular moves,
+        and board_size * board_size for pass.
+        """
+        if action == self.board_size * self.board_size:
+            return None  # Pass
+        x = action % self.board_size
+        y = action // self.board_size
+        return (x, y)
+
+    def move_to_action(self, move: Move | None) -> int:
+        """Convert (x, y) move to OpenSpiel action index."""
+        if move is None:
+            return self.board_size * self.board_size  # Pass
+        x, y = move
+        return y * self.board_size + x
+
+    def get_board_from_state(self, state: "pyspiel.State") -> Board:
+        """Extract board matrix from OpenSpiel state.
+
+        Returns board where 0=empty, 1=black, -1=white.
+        """
+        board = [[0] * self.board_size for _ in range(self.board_size)]
+
+        # OpenSpiel observation tensor format for Go
+        # We need to parse the string representation
+        state_str = str(state)
+        lines = state_str.strip().split('\n')
+
+        for y, line in enumerate(lines[:self.board_size]):
+            for x, char in enumerate(line[:self.board_size]):
+                if char == 'X':  # Black
+                    board[y][x] = 1
+                elif char == 'O':  # White
+                    board[y][x] = -1
+
+        return board
+
+
+class OpenSpielMCTS:
+    """MCTS implementation using OpenSpiel's MCTSBot.
+
+    This provides MCTS search using DeepMind's optimized implementation.
+    Note: This only works for games starting from an empty board.
+    """
+
+    def __init__(
+        self,
+        iterations: int = 1000,
+        exploration: float = 1.414,
+        board_size: int = 9,
+        komi: float = 7.5,
+    ):
+        """Initialize OpenSpiel MCTS.
+
+        Parameters
+        ----------
+        iterations : int
+            Number of MCTS simulations per search.
+        exploration : float
+            UCT exploration constant.
+        board_size : int
+            Board size for Go game.
+        komi : float
+            Komi value.
+        """
+        if not _OPENSPIEL_AVAILABLE:
+            raise ImportError("OpenSpiel is not installed")
+
+        self.iterations = iterations
+        self.exploration = exploration
+        self.board_size = board_size
+        self.komi = komi
+
+        self._wrapper = OpenSpielGoWrapper(board_size, komi)
+        self._game = self._wrapper._game
+
+        # Create random state for rollouts
+        self._rng = random.Random()
+
+        # Create evaluator (random rollouts)
+        self._evaluator = openspiel_mcts.RandomRolloutEvaluator(
+            n_rollouts=1,
+            random_state=self._rng,
+        )
+
+    def search(self, state: "pyspiel.State") -> Move | None:
+        """Find the best move using MCTS.
+
+        Parameters
+        ----------
+        state : pyspiel.State
+            Current OpenSpiel game state.
+
+        Returns
+        -------
+        Move | None
+            Best move found, or None for pass.
+        """
+        if state.is_terminal():
+            return None
+
+        # Create MCTS bot
+        bot = openspiel_mcts.MCTSBot(
+            self._game,
+            uct_c=self.exploration,
+            max_simulations=self.iterations,
+            evaluator=self._evaluator,
+            random_state=self._rng,
+            solve=False,
+            verbose=False,
+        )
+
+        # Get best action
+        action = bot.step(state)
+        return self._wrapper.action_to_move(action)
+
+    def search_with_policy(self, state: "pyspiel.State") -> Tuple[Move | None, Dict[Move, float]]:
+        """Find best move and return move probability distribution.
+
+        Returns
+        -------
+        tuple[Move | None, dict[Move, float]]
+            Best move and dictionary mapping moves to visit probabilities.
+        """
+        if state.is_terminal():
+            return None, {}
+
+        bot = openspiel_mcts.MCTSBot(
+            self._game,
+            uct_c=self.exploration,
+            max_simulations=self.iterations,
+            evaluator=self._evaluator,
+            random_state=self._rng,
+            solve=False,
+            verbose=False,
+        )
+
+        # Get policy and action
+        policy, action = bot.step_with_policy(state)
+
+        # Convert policy to our format
+        probs: Dict[Move, float] = {}
+        for act, prob in policy:
+            move = self._wrapper.action_to_move(act)
+            if move is not None:  # Exclude pass from probabilities
+                probs[move] = prob
+
+        best_move = self._wrapper.action_to_move(action)
+        return best_move, probs
+
+
+# =============================================================================
+# Fallback Pure Python Implementation
+# =============================================================================
 
 @dataclass
 class MCTSNode:
@@ -315,8 +515,9 @@ class GoGameState:
 class MCTS:
     """Monte Carlo Tree Search for Go.
 
-    This class implements the full MCTS algorithm with configurable
-    parameters for search iterations and exploration.
+    This class provides MCTS search with automatic backend selection:
+    - Uses OpenSpiel when available and applicable
+    - Falls back to pure Python implementation otherwise
 
     Example
     -------
@@ -331,6 +532,7 @@ class MCTS:
         iterations: int = 1000,
         exploration: float = 1.414,
         max_rollout_depth: int = 200,
+        use_openspiel: bool = True,
     ):
         """Initialize MCTS.
 
@@ -342,10 +544,32 @@ class MCTS:
             UCB1 exploration constant.
         max_rollout_depth : int
             Maximum moves in a rollout before forcing termination.
+        use_openspiel : bool
+            Whether to use OpenSpiel backend when available.
         """
         self.iterations = iterations
         self.exploration = exploration
         self.max_rollout_depth = max_rollout_depth
+        self.use_openspiel = use_openspiel and _OPENSPIEL_AVAILABLE
+
+        self._openspiel_mcts: Optional[OpenSpielMCTS] = None
+
+    def _get_openspiel_mcts(self, board_size: int, komi: float) -> OpenSpielMCTS:
+        """Get or create OpenSpiel MCTS instance."""
+        if (self._openspiel_mcts is None or
+            self._openspiel_mcts.board_size != board_size or
+            self._openspiel_mcts.komi != komi):
+            self._openspiel_mcts = OpenSpielMCTS(
+                iterations=self.iterations,
+                exploration=self.exploration,
+                board_size=board_size,
+                komi=komi,
+            )
+        return self._openspiel_mcts
+
+    def _is_empty_board(self, board: Board) -> bool:
+        """Check if board is empty."""
+        return all(cell == 0 for row in board for cell in row)
 
     def search(
         self,
@@ -369,6 +593,33 @@ class MCTS:
         Move | None
             Best move found, or None if no legal moves (should pass).
         """
+        board_size = len(board)
+
+        # Try OpenSpiel for empty boards (best performance)
+        if self.use_openspiel and self._is_empty_board(board):
+            try:
+                os_mcts = self._get_openspiel_mcts(board_size, komi)
+                state = os_mcts._wrapper.new_initial_state()
+
+                # Set current player (OpenSpiel Go starts with black=0)
+                # If white to play, we need to pass once for black
+                if color == -1:
+                    state.apply_action(board_size * board_size)  # Black passes
+
+                return os_mcts.search(state)
+            except Exception:
+                pass  # Fall through to Python implementation
+
+        # Use Python implementation for non-empty boards or as fallback
+        return self._python_search(board, color, komi)
+
+    def _python_search(
+        self,
+        board: Board,
+        color: int,
+        komi: float,
+    ) -> Move | None:
+        """Pure Python MCTS implementation."""
         state = GoGameState(board, current_color=color, komi=komi)
         legal_moves = state.get_legal_moves()
 
@@ -511,6 +762,32 @@ class MCTS:
         dict[Move, float]
             Mapping from move to visit probability.
         """
+        board_size = len(board)
+
+        # Try OpenSpiel for empty boards
+        if self.use_openspiel and self._is_empty_board(board):
+            try:
+                os_mcts = self._get_openspiel_mcts(board_size, komi)
+                state = os_mcts._wrapper.new_initial_state()
+
+                if color == -1:
+                    state.apply_action(board_size * board_size)
+
+                _, probs = os_mcts.search_with_policy(state)
+                return probs
+            except Exception:
+                pass
+
+        # Fall back to Python implementation
+        return self._python_get_move_probabilities(board, color, komi)
+
+    def _python_get_move_probabilities(
+        self,
+        board: Board,
+        color: int,
+        komi: float,
+    ) -> Dict[Move, float]:
+        """Pure Python implementation of move probabilities."""
         state = GoGameState(board, current_color=color, komi=komi)
         legal_moves = state.get_legal_moves()
 
@@ -569,7 +846,10 @@ class MCTS:
         }
 
 
-# Module-level convenience function
+# =============================================================================
+# Module-level convenience functions
+# =============================================================================
+
 def mcts_search(
     board: Board,
     color: int = 1,
@@ -598,11 +878,19 @@ def mcts_search(
     return mcts.search(board, color=color, komi=komi)
 
 
+def is_openspiel_available() -> bool:
+    """Check if OpenSpiel is available."""
+    return _OPENSPIEL_AVAILABLE
+
+
 __all__ = [
     "MCTS",
     "MCTSNode",
     "GoGameState",
     "mcts_search",
+    "is_openspiel_available",
+    "OpenSpielMCTS",
+    "OpenSpielGoWrapper",
     "Board",
     "Move",
 ]
