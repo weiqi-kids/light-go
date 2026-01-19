@@ -2,7 +2,7 @@
 
 This package contains detailed tests for each of the 8 core components:
 1. Liberty - Liberty encoder (core/liberty.py)
-2. Rules - Go rules engine (input/sgf_to_input.py)
+2. SGF Parser - SGF parsing and input conversion (input/sgf_to_input.py)
 3. Neural Network - Neural network model (core/engine.py:GoAIModel)
 4. Strategy Manager - Strategy management (core/strategy_manager.py)
 5. Auto Learner - Architecture genome / auto learning (core/auto_learner.py)
