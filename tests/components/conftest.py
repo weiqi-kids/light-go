@@ -234,3 +234,59 @@ def temp_sgf_dir(temp_dir):
         f.write(sgf_content)
 
     return sgf_dir
+
+
+# ---------------------------------------------------------------------------
+# Engine Fixtures (Optimized for reuse)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="class")
+def shared_engine(tmp_path_factory):
+    """Class-scoped Engine instance for tests that don't modify state.
+
+    This fixture creates a single Engine instance that is shared across
+    all tests within a test class, reducing initialization overhead.
+    """
+    from core.engine import Engine
+    tmp_dir = tmp_path_factory.mktemp("shared_engine")
+    return Engine(str(tmp_dir))
+
+
+@pytest.fixture(scope="module")
+def trained_engine_factory(tmp_path_factory):
+    """Module-scoped factory for pre-trained Engine.
+
+    Returns a tuple of (engine, output_dir, strategy_name) where the engine
+    has already been trained with sample SGF data. This avoids repeated
+    training across multiple test classes.
+    """
+    from core.engine import Engine
+
+    # Create directories
+    tmp_dir = tmp_path_factory.mktemp("trained_engine")
+    sgf_dir = tmp_dir / "sgf_data"
+    sgf_dir.mkdir()
+    output_dir = tmp_dir / "output"
+    output_dir.mkdir()
+
+    # Create sample SGF file
+    sgf_content = "(;GM[1]FF[4]SZ[9]KM[7.5];B[ee];W[gc])"
+    sgf_path = sgf_dir / "test_game.sgf"
+    sgf_path.write_text(sgf_content)
+
+    # Create and train engine
+    engine = Engine(str(tmp_dir))
+    strategy_name = engine.train(str(sgf_dir), str(output_dir))
+
+    return engine, str(sgf_dir), str(output_dir), strategy_name
+
+
+# ---------------------------------------------------------------------------
+# Pytest Markers Configuration
+# ---------------------------------------------------------------------------
+
+def pytest_configure(config):
+    """Register custom markers."""
+    config.addinivalue_line(
+        "markers", "slow: marks tests as slow (deselect with '-m \"not slow\"')"
+    )
