@@ -173,12 +173,15 @@ class TestStrategyManagerRegister:
 class TestStrategyManagerSaveLoad:
     """Tests for strategy persistence."""
 
-    def test_save_strategy_creates_pkl_file(self, strategy_manager, mock_strategy, temp_dir):
-        """Save strategy creates .pkl file."""
+    def test_save_strategy_creates_file(self, strategy_manager, mock_strategy, temp_dir):
+        """Save strategy creates .joblib or .pkl file."""
         strategy = mock_strategy(prediction=(1, 1))
         strategy_manager.save_strategy("savable", strategy)
 
-        assert os.path.exists(os.path.join(temp_dir, "savable.pkl"))
+        # Check for either .joblib (if available) or .pkl file
+        joblib_exists = os.path.exists(os.path.join(temp_dir, "savable.joblib"))
+        pkl_exists = os.path.exists(os.path.join(temp_dir, "savable.pkl"))
+        assert joblib_exists or pkl_exists
 
     def test_save_strategy_creates_meta_file_for_class_with_load(self, strategy_manager, mock_strategy, temp_dir):
         """Save strategy creates .meta file for classes with load method."""
@@ -232,8 +235,11 @@ class TestStrategyManagerSaveLoad:
 
         strategy_manager.save_strategies()
 
-        assert os.path.exists(os.path.join(temp_dir, "batch1.pkl"))
-        assert os.path.exists(os.path.join(temp_dir, "batch2.pkl"))
+        # Check for either .joblib or .pkl files
+        for name in ["batch1", "batch2"]:
+            joblib_exists = os.path.exists(os.path.join(temp_dir, f"{name}.joblib"))
+            pkl_exists = os.path.exists(os.path.join(temp_dir, f"{name}.pkl"))
+            assert joblib_exists or pkl_exists
 
     def test_load_strategies_batch(self, temp_dir, mock_strategy):
         """load_strategies loads all strategies from directory."""
@@ -734,7 +740,10 @@ class TestModuleLevelSaveLoad:
         strategy = mock_strategy(prediction="test")
         module_save_strategy(strategy, "mod_save")
 
-        assert os.path.exists(os.path.join(temp_dir, "mod_save.pkl"))
+        # Check for either .joblib or .pkl file
+        joblib_exists = os.path.exists(os.path.join(temp_dir, "mod_save.joblib"))
+        pkl_exists = os.path.exists(os.path.join(temp_dir, "mod_save.pkl"))
+        assert joblib_exists or pkl_exists
 
     def test_module_load_uses_default_dir(self, temp_dir, mock_strategy, monkeypatch):
         """load_strategy uses DEFAULT_STRATEGY_DIR."""
@@ -826,3 +835,240 @@ class TestEdgeCases:
 
         results = strategy_manager.run_all({})
         assert results["complex"] == complex_pred
+
+
+# ===========================================================================
+# Layer 1: joblib serialization tests
+# ===========================================================================
+
+
+class TestJoblibSerialization:
+    """Tests for joblib serialization (Layer 1)."""
+
+    def test_save_load_with_joblib(self, temp_dir):
+        """Save and load strategy using joblib format."""
+        manager = StrategyManager(temp_dir)
+        data = {"key": "value", "number": 42, "list": [1, 2, 3]}
+
+        manager.save_strategy("joblib_test", data)
+        loaded = manager.load_strategy("joblib_test")
+
+        assert loaded["key"] == "value"
+        assert loaded["number"] == 42
+        assert loaded["list"] == [1, 2, 3]
+
+    def test_backward_compatible_with_pkl(self, temp_dir):
+        """Can still load old .pkl files."""
+        import pickle
+
+        # Manually create a .pkl file (simulating old format)
+        pkl_path = os.path.join(temp_dir, "legacy.pkl")
+        with open(pkl_path, "wb") as f:
+            pickle.dump({"legacy": True}, f)
+
+        manager = StrategyManager(temp_dir)
+        loaded = manager.load_strategy("legacy")
+
+        assert loaded["legacy"] is True
+
+    def test_prefers_joblib_over_pkl(self, temp_dir):
+        """When both .joblib and .pkl exist, prefers .joblib."""
+        import pickle
+
+        # Create both files with different content
+        pkl_path = os.path.join(temp_dir, "both.pkl")
+        with open(pkl_path, "wb") as f:
+            pickle.dump({"format": "pkl"}, f)
+
+        # Check if joblib is available
+        try:
+            import joblib
+            joblib_path = os.path.join(temp_dir, "both.joblib")
+            joblib.dump({"format": "joblib"}, joblib_path)
+            has_joblib = True
+        except ImportError:
+            has_joblib = False
+
+        manager = StrategyManager(temp_dir)
+        loaded = manager.load_strategy("both")
+
+        if has_joblib:
+            assert loaded["format"] == "joblib"
+        else:
+            assert loaded["format"] == "pkl"
+
+    def test_list_strategies_includes_both_formats(self, temp_dir):
+        """list_strategies() finds both .joblib and .pkl files."""
+        import pickle
+
+        # Create .pkl file
+        pkl_path = os.path.join(temp_dir, "pkl_only.pkl")
+        with open(pkl_path, "wb") as f:
+            pickle.dump({}, f)
+
+        manager = StrategyManager(temp_dir)
+
+        # Save another with manager (will use joblib if available)
+        manager.save_strategy("manager_saved", {})
+
+        strategies = manager.list_strategies()
+        assert "pkl_only" in strategies
+        assert "manager_saved" in strategies
+
+    def test_available_features_includes_joblib(self):
+        """available_features() reports joblib status."""
+        features = StrategyManager.available_features()
+
+        assert "joblib" in features
+        assert isinstance(features["joblib"], bool)
+
+
+# ===========================================================================
+# Layer 2: sklearn VotingClassifier tests
+# ===========================================================================
+
+
+class TestSklearnEnsemble:
+    """Tests for sklearn VotingClassifier integration (Layer 2)."""
+
+    def test_available_features_includes_sklearn(self):
+        """available_features() reports sklearn status."""
+        features = StrategyManager.available_features()
+
+        assert "sklearn" in features
+        assert isinstance(features["sklearn"], bool)
+
+    def test_build_ensemble_without_sklearn(self, temp_dir):
+        """build_ensemble raises ImportError if sklearn not available."""
+        from core.strategy_manager import HAS_SKLEARN
+
+        manager = StrategyManager(temp_dir)
+
+        if not HAS_SKLEARN:
+            with pytest.raises(ImportError):
+                manager.build_ensemble()
+
+    @pytest.mark.skipif(
+        not __import__("core.strategy_manager", fromlist=["HAS_SKLEARN"]).HAS_SKLEARN,
+        reason="sklearn not installed"
+    )
+    def test_build_ensemble_with_sklearn(self, temp_dir):
+        """build_ensemble creates VotingClassifier when sklearn available."""
+        from sklearn.tree import DecisionTreeClassifier
+
+        manager = StrategyManager(temp_dir)
+
+        # Register sklearn-compatible estimators
+        manager.register_strategy("tree1", DecisionTreeClassifier())
+        manager.register_strategy("tree2", DecisionTreeClassifier())
+
+        ensemble = manager.build_ensemble(voting="hard")
+
+        assert ensemble is not None
+        assert hasattr(ensemble, "estimators")
+
+    @pytest.mark.skipif(
+        not __import__("core.strategy_manager", fromlist=["HAS_SKLEARN"]).HAS_SKLEARN,
+        reason="sklearn not installed"
+    )
+    def test_build_ensemble_empty_returns_none(self, temp_dir):
+        """build_ensemble with no valid estimators returns None."""
+        manager = StrategyManager(temp_dir)
+
+        # Register non-sklearn strategy
+        manager.register_strategy("simple", {"data": "value"})
+
+        ensemble = manager.build_ensemble()
+
+        assert ensemble is None
+
+
+# ===========================================================================
+# Layer 3: MLflow tracking tests
+# ===========================================================================
+
+
+class TestMLflowTracking:
+    """Tests for MLflow tracking integration (Layer 3)."""
+
+    def test_available_features_includes_mlflow(self):
+        """available_features() reports mlflow status."""
+        features = StrategyManager.available_features()
+
+        assert "mlflow" in features
+        assert isinstance(features["mlflow"], bool)
+
+    def test_setup_mlflow_without_mlflow(self, temp_dir):
+        """setup_mlflow returns False if mlflow not available."""
+        from core.strategy_manager import HAS_MLFLOW
+
+        manager = StrategyManager(temp_dir)
+
+        if not HAS_MLFLOW:
+            result = manager.setup_mlflow("test_experiment")
+            assert result is False
+
+    def test_log_strategy_without_mlflow(self, temp_dir):
+        """log_strategy returns None if mlflow not available."""
+        from core.strategy_manager import HAS_MLFLOW
+
+        manager = StrategyManager(temp_dir)
+        manager.register_strategy("test", create_strategy())
+
+        if not HAS_MLFLOW:
+            result = manager.log_strategy("test", metrics={"accuracy": 0.95})
+            assert result is None
+
+    def test_log_strategy_nonexistent(self, temp_dir):
+        """log_strategy returns None for nonexistent strategy."""
+        from core.strategy_manager import HAS_MLFLOW
+
+        manager = StrategyManager(temp_dir)
+
+        if HAS_MLFLOW:
+            result = manager.log_strategy("nonexistent")
+            assert result is None
+
+    @pytest.mark.skipif(
+        not __import__("core.strategy_manager", fromlist=["HAS_MLFLOW"]).HAS_MLFLOW,
+        reason="mlflow not installed"
+    )
+    def test_setup_mlflow_with_mlflow(self, temp_dir):
+        """setup_mlflow succeeds when mlflow available."""
+        manager = StrategyManager(temp_dir)
+
+        result = manager.setup_mlflow("test_go_strategies")
+
+        assert result is True
+        assert manager._mlflow_experiment == "test_go_strategies"
+
+    @pytest.mark.skipif(
+        not __import__("core.strategy_manager", fromlist=["HAS_MLFLOW"]).HAS_MLFLOW,
+        reason="mlflow not installed"
+    )
+    def test_log_strategy_with_mlflow(self, temp_dir):
+        """log_strategy returns run_id when successful."""
+        manager = StrategyManager(temp_dir)
+        manager.setup_mlflow("test_experiment")
+
+        # Create a simple strategy with predict
+        class SimpleStrategy:
+            def __init__(self):
+                self.training_params = {"stable": False}
+
+            def accept_state(self, state):
+                return True
+
+            def predict(self, data):
+                return 0
+
+        manager.register_strategy("loggable", SimpleStrategy())
+        run_id = manager.log_strategy(
+            "loggable",
+            metrics={"accuracy": 0.85, "win_rate": 0.6},
+            params={"learning_rate": 0.01},
+            tags={"version": "test"}
+        )
+
+        assert run_id is not None
+        assert isinstance(run_id, str)
