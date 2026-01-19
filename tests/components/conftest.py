@@ -5,7 +5,7 @@ import os
 import sys
 import tempfile
 import pytest
-from typing import List
+from typing import List, Tuple
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -37,6 +37,22 @@ def board_with_single_black_stone() -> Board:
     board = [[0] * 5 for _ in range(5)]
     board[2][2] = 1
     return board
+
+
+@pytest.fixture
+def make_board():
+    """Factory fixture to create boards with stones at specified positions.
+
+    Usage:
+        board = make_board(5, [(2, 2, 1), (0, 0, -1)])  # 5x5 with black at (2,2), white at (0,0)
+    """
+    def _make_board(size: int, stones: List[Tuple[int, int, int]] = None) -> Board:
+        board = [[0] * size for _ in range(size)]
+        if stones:
+            for x, y, color in stones:
+                board[y][x] = color
+        return board
+    return _make_board
 
 
 @pytest.fixture
