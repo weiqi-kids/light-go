@@ -1,19 +1,52 @@
+"""Integration tests for REST API endpoints.
+
+Tests the REST API with real engine implementation.
+"""
+from __future__ import annotations
+
+from typing import List
+
+import pytest
 from fastapi.testclient import TestClient
 
 from api.rest_api import app
 
 
-def test_health_and_predict_endpoints():
-    client = TestClient(app)
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
 
-    resp = client.get('/health')
-    assert resp.status_code == 200
-    assert resp.json()['status'] == 'ok'
+@pytest.fixture
+def client() -> TestClient:
+    """Return a test client for the REST API."""
+    return TestClient(app)
 
-    # Use a 5x5 board instead of 1x1
-    # A 1x1 board has no legal moves (placing a stone would be suicide)
-    board_5x5 = [[0] * 5 for _ in range(5)]
-    payload = {'input': {'board': board_5x5, 'color': 'black'}}
-    pred = client.post('/predict', json=payload)
-    assert pred.status_code == 200
-    assert pred.json()['output'] is not None
+
+@pytest.fixture
+def empty_board_5x5() -> List[List[int]]:
+    """Return a 5x5 empty board."""
+    return [[0] * 5 for _ in range(5)]
+
+
+# ---------------------------------------------------------------------------
+# Test Classes
+# ---------------------------------------------------------------------------
+
+class TestRESTAPIEndpoints:
+    """Tests for REST API endpoints."""
+
+    def test_health_endpoint(self, client: TestClient):
+        """Health endpoint returns ok status."""
+        response = client.get("/health")
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "ok"
+
+    def test_predict_endpoint(self, client: TestClient, empty_board_5x5: List[List[int]]):
+        """Predict endpoint returns valid move."""
+        payload = {"input": {"board": empty_board_5x5, "color": "black"}}
+
+        response = client.post("/predict", json=payload)
+
+        assert response.status_code == 200
+        assert response.json()["output"] is not None

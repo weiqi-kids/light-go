@@ -1,29 +1,50 @@
-import unittest
+"""Unit tests for KataGo input conversion (input/katago_to_input.py).
+
+Tests coordinate conversion and file processing for KataGo format data.
+"""
 import json
-import os
+import pathlib
 import sys
 from unittest.mock import patch, mock_open
 
-# Add the parent directory of input to the sys.path to allow importing katago_to_input
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+import pytest
+
+# Add project root to path
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
 from input.katago_to_input import katago_to_coords, process_katago_file
 
-class TestKatagoToInput(unittest.TestCase):
 
-    def test_katago_to_coords(self):
-        self.assertEqual(katago_to_coords("A19", 19), (0, 0))
-        self.assertEqual(katago_to_coords("T1", 19), (18, 18))
-        self.assertEqual(katago_to_coords("K10", 19), (9, 9))
-        self.assertIsNone(katago_to_coords("PASS", 19))
-        self.assertIsNone(katago_to_coords("A20", 19)) # Out of bounds
-        self.assertIsNone(katago_to_coords("Z10", 19)) # Invalid column
-        self.assertIsNone(katago_to_coords("A", 19)) # Incomplete move string
-        self.assertIsNone(katago_to_coords(None, 19))
-        self.assertIsNone(katago_to_coords(123, 19))
+class TestKatagoToCoords:
+    """Tests for katago_to_coords() function."""
 
-    @patch('builtins.open', new_callable=mock_open)
-    def test_process_katago_file_valid_data(self, mock_file_open):
+    @pytest.mark.parametrize("move,board_size,expected", [
+        ("A19", 19, (0, 0)),
+        ("T1", 19, (18, 18)),
+        ("K10", 19, (9, 9)),
+    ], ids=["top_left", "bottom_right", "center"])
+    def test_valid_coordinates(self, move, board_size, expected):
+        """Valid move strings convert to correct coordinates."""
+        assert katago_to_coords(move, board_size) == expected
+
+    @pytest.mark.parametrize("move,board_size", [
+        ("PASS", 19),
+        ("A20", 19),     # Out of bounds
+        ("Z10", 19),     # Invalid column
+        ("A", 19),       # Incomplete move string
+        (None, 19),      # None input
+        (123, 19),       # Wrong type
+    ], ids=["pass", "out_of_bounds", "invalid_col", "incomplete", "none", "wrong_type"])
+    def test_invalid_coordinates_return_none(self, move, board_size):
+        """Invalid move strings return None."""
+        assert katago_to_coords(move, board_size) is None
+
+
+class TestProcessKatagoFile:
+    """Tests for process_katago_file() function."""
+
+    def test_valid_data(self):
+        """Process file with valid KataGo data."""
         mock_data = [
             json.dumps({
                 "board": ["E", "E", "B", "E", "E", "E", "E", "E", "E"],
@@ -34,7 +55,13 @@ class TestKatagoToInput(unittest.TestCase):
                 "blackCaptures": 0,
                 "pla": "B",
                 "moves": ["C1"],
-                "rules": {"rules": "chinese", "komi": 7.5, "mainTime": 3600, "byoYomiTime": 30, "byoYomiPeriods": 3},
+                "rules": {
+                    "rules": "chinese",
+                    "komi": 7.5,
+                    "mainTime": 3600,
+                    "byoYomiTime": 30,
+                    "byoYomiPeriods": 3,
+                },
                 "bTime": 3500, "bPeriodsLeft": 3,
                 "wTime": 3500, "wPeriodsLeft": 3,
                 "illegalMoves": ["A1"]
@@ -48,47 +75,60 @@ class TestKatagoToInput(unittest.TestCase):
                 "blackCaptures": 0,
                 "pla": "W",
                 "moves": ["C1", "B2"],
-                "rules": {"rules": "chinese", "komi": 7.5, "mainTime": 3600, "byoYomiTime": 30, "byoYomiPeriods": 3},
+                "rules": {
+                    "rules": "chinese",
+                    "komi": 7.5,
+                    "mainTime": 3600,
+                    "byoYomiTime": 30,
+                    "byoYomiPeriods": 3,
+                },
                 "bTime": 3400, "bPeriodsLeft": 3,
                 "wTime": 3400, "wPeriodsLeft": 3,
                 "illegalMoves": ["A1", "C2"]
             })
         ]
-        mock_file_open.return_value.__enter__.return_value = mock_data
 
-        result = process_katago_file("dummy_path.jsonl")
+        with patch('builtins.open', mock_open()) as mock_file:
+            mock_file.return_value.__enter__.return_value = mock_data
+            result = process_katago_file("dummy_path.jsonl")
 
-        self.assertEqual(len(result), 2)
+        assert len(result) == 2
 
         # Test first move
-        self.assertEqual(result[0]['liberty'], [(2, 2, 4)])
-        self.assertEqual(result[0]['forbidden'], [(0, 2)])
-        self.assertEqual(result[0]['metadata']['rules']['ruleset'], 'chinese')
-        self.assertEqual(result[0]['metadata']['capture']['black'], 0)
-        self.assertEqual(result[0]['metadata']['next_move'], 'black')
-        self.assertEqual(result[0]['metadata']['step'], ['C1'])
-        self.assertEqual(result[0]['metadata']['time_control']['main_time_seconds'], 3600)
-        self.assertEqual(result[0]['metadata']['time'][0]['player'], 'black')
+        assert result[0]['liberty'] == [(2, 2, 4)]
+        assert result[0]['forbidden'] == [(0, 2)]
+        assert result[0]['metadata']['rules']['ruleset'] == 'chinese'
+        assert result[0]['metadata']['capture']['black'] == 0
+        assert result[0]['metadata']['next_move'] == 'black'
+        assert result[0]['metadata']['step'] == ['C1']
+        assert result[0]['metadata']['time_control']['main_time_seconds'] == 3600
+        assert result[0]['metadata']['time'][0]['player'] == 'black'
 
         # Test second move
-        self.assertEqual(result[1]['liberty'], [(2, 2, 3), (1, 1, -2)])
-        self.assertEqual(result[1]['forbidden'], [(0, 2), (2, 1)])
-        self.assertEqual(result[1]['metadata']['next_move'], 'white')
+        assert result[1]['liberty'] == [(2, 2, 3), (1, 1, -2)]
+        assert result[1]['forbidden'] == [(0, 2), (2, 1)]
+        assert result[1]['metadata']['next_move'] == 'white'
 
-    @patch('builtins.open', new_callable=mock_open)
-    def test_process_katago_file_empty(self, mock_file_open):
-        mock_file_open.return_value.__enter__.return_value = []
-        result = process_katago_file("empty.jsonl")
-        self.assertEqual(result, [])
+    def test_empty_file(self):
+        """Process empty file returns empty list."""
+        with patch('builtins.open', mock_open()) as mock_file:
+            mock_file.return_value.__enter__.return_value = []
+            result = process_katago_file("empty.jsonl")
 
-    @patch('builtins.open', new_callable=mock_open)
-    def test_process_katago_file_invalid_json(self, mock_file_open):
-        mock_file_open.return_value.__enter__.return_value = ['{"key": "value"}', "invalid json", '{"another": 1}']
-        result = process_katago_file("invalid.jsonl")
-        self.assertEqual(len(result), 2) # Only valid JSON lines should be processed
+        assert result == []
 
-    @patch('builtins.open', new_callable=mock_open)
-    def test_process_katago_file_missing_fields(self, mock_file_open):
+    def test_invalid_json_lines_skipped(self):
+        """Invalid JSON lines are skipped, valid ones processed."""
+        mock_data = ['{"key": "value"}', "invalid json", '{"another": 1}']
+
+        with patch('builtins.open', mock_open()) as mock_file:
+            mock_file.return_value.__enter__.return_value = mock_data
+            result = process_katago_file("invalid.jsonl")
+
+        assert len(result) == 2  # Only valid JSON lines processed
+
+    def test_missing_fields_uses_defaults(self):
+        """Missing fields use default values."""
         mock_data = [
             json.dumps({
                 "board": ["E", "B"],
@@ -98,20 +138,21 @@ class TestKatagoToInput(unittest.TestCase):
                 "pla": "B"
             })
         ]
-        mock_file_open.return_value.__enter__.return_value = mock_data
-        result = process_katago_file("missing_fields.jsonl")
-        self.assertEqual(len(result), 1)
-        self.assertIn('liberty', result[0])
-        self.assertIn('forbidden', result[0])
-        self.assertIn('metadata', result[0])
-        self.assertEqual(result[0]['metadata']['rules']['handicap'], 0) # Default value
-        self.assertEqual(result[0]['metadata']['capture']['black'], 0) # Default value
 
-    @patch('builtins.open', new_callable=mock_open)
-    def test_process_katago_file_io_error(self, mock_file_open):
-        mock_file_open.side_effect = IOError("File not found")
-        result = process_katago_file("non_existent.jsonl")
-        self.assertEqual(result, [])
+        with patch('builtins.open', mock_open()) as mock_file:
+            mock_file.return_value.__enter__.return_value = mock_data
+            result = process_katago_file("missing_fields.jsonl")
 
-if __name__ == '__main__':
-    unittest.main()
+        assert len(result) == 1
+        assert 'liberty' in result[0]
+        assert 'forbidden' in result[0]
+        assert 'metadata' in result[0]
+        assert result[0]['metadata']['rules']['handicap'] == 0  # Default value
+        assert result[0]['metadata']['capture']['black'] == 0   # Default value
+
+    def test_io_error_returns_empty(self):
+        """IO error returns empty list."""
+        with patch('builtins.open', side_effect=IOError("File not found")):
+            result = process_katago_file("non_existent.jsonl")
+
+        assert result == []

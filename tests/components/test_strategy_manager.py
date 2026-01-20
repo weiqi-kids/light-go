@@ -26,12 +26,10 @@ from core.strategy_manager import (
     DEFAULT_STRATEGY_DIR,
 )
 
-# MockStrategy and MockMetaModel are imported from conftest.py by pytest
-# We need to import them for type hints and direct usage in tests
-import sys
-import os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from conftest import MockStrategy, MockMetaModel
+# MockStrategy and MockMetaModel are defined in the local conftest.py
+# and are available via pytest fixtures, but we also import them directly
+# for type hints and direct usage in tests
+from tests.components.conftest import MockStrategy, MockMetaModel
 
 
 # ===========================================================================
