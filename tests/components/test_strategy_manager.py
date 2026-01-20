@@ -71,8 +71,8 @@ class TestCreateStrategy:
         {"total_black_stones": 0},
         {"total_black_stones": 100, "total_white_stones": 99},
         {"other_key": "value"},
-    ])
-    def test_accept_state_accepts_any_state(self, state):
+    ], ids=["empty", "zero_stones", "many_stones", "other_key"])
+    def test_accept_state_accepts_any_state(self, state: dict):
         """Default accept_state accepts any state."""
         strategy = create_strategy()
         assert strategy.accept_state(state) is True
@@ -808,8 +808,8 @@ class TestEdgeCases:
         "strategy.3",
         "UPPERCASE",
         "mixed_Case-123",
-    ])
-    def test_strategy_name_variations(self, strategy_manager, mock_strategy, name):
+    ], ids=["underscore", "dash", "dot", "uppercase", "mixed"])
+    def test_strategy_name_variations(self, strategy_manager, mock_strategy, name: str):
         """Strategy names with various characters."""
         strategy_manager.register_strategy(name, mock_strategy())
         assert name in strategy_manager.list_strategies()
