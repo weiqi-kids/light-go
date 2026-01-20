@@ -1,42 +1,30 @@
+"""Unit tests for HealthCheckDashboard (monitoring/health_check.py).
+
+Tests health check registration, execution, and status reporting
+using real implementation.
+"""
+from __future__ import annotations
+
 import asyncio
-import pathlib
-import sys
 
 import pytest
-
-# Add project root to path
-ROOT = pathlib.Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT))
 
 from monitoring.health_check import CheckResult, HealthCheckDashboard
 
 
-def test_register_and_run_single():
-    dash = HealthCheckDashboard()
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
 
-    async def ok_check() -> CheckResult:
-        return CheckResult("OK", 0.0)
-
-    dash.register("svc", ok_check)
-    result = asyncio.run(dash.run_check("svc"))
-    assert result.status == "OK"
-    assert "svc" in dash.results
+@pytest.fixture
+def dashboard() -> HealthCheckDashboard:
+    """Return a fresh HealthCheckDashboard instance."""
+    return HealthCheckDashboard()
 
 
-def test_run_all_multiple():
-    dash = HealthCheckDashboard()
-
-    async def warn_check() -> CheckResult:
-        return CheckResult("WARN", 0.1, "slow")
-
-    dash.register("a", lambda: CheckResult("OK", 0.0))
-    dash.register("b", warn_check)
-    results = asyncio.run(dash.run_all())
-    assert results["a"].status == "OK"
-    assert results["b"].status == "WARN"
-
-
-def _build_dashboard_for_api() -> HealthCheckDashboard:
+@pytest.fixture
+def dashboard_with_api_check() -> HealthCheckDashboard:
+    """Return a dashboard with an API check registered."""
     dash = HealthCheckDashboard()
 
     async def ok_check() -> CheckResult:
@@ -46,38 +34,81 @@ def _build_dashboard_for_api() -> HealthCheckDashboard:
     return dash
 
 
-def test_api_response():
-    dash = _build_dashboard_for_api()
-    data = asyncio.run(dash.api_status())
-    assert data["api"]["status"] == "OK"
+# ---------------------------------------------------------------------------
+# Test Classes
+# ---------------------------------------------------------------------------
+
+class TestHealthCheckRegistration:
+    """Tests for check registration and execution."""
+
+    def test_register_and_run_single(self, dashboard: HealthCheckDashboard):
+        """Register a check and run it successfully."""
+
+        async def ok_check() -> CheckResult:
+            return CheckResult("OK", 0.0)
+
+        dashboard.register("svc", ok_check)
+        result = asyncio.run(dashboard.run_check("svc"))
+
+        assert result.status == "OK"
+        assert "svc" in dashboard.results
+
+    def test_run_all_multiple(self, dashboard: HealthCheckDashboard):
+        """Run multiple registered checks."""
+
+        async def warn_check() -> CheckResult:
+            return CheckResult("WARN", 0.1, "slow")
+
+        dashboard.register("a", lambda: CheckResult("OK", 0.0))
+        dashboard.register("b", warn_check)
+
+        results = asyncio.run(dashboard.run_all())
+
+        assert results["a"].status == "OK"
+        assert results["b"].status == "WARN"
 
 
-def test_html_status_page():
-    dash = _build_dashboard_for_api()
-    resp = asyncio.run(dash.html_status())
-    assert resp.status_code == 200
-    body = resp.body.decode()
-    assert "Service Status" in body
-    assert "api" in body
+class TestHealthCheckAPI:
+    """Tests for API response methods."""
+
+    def test_api_response(self, dashboard_with_api_check: HealthCheckDashboard):
+        """api_status returns correct format."""
+        data = asyncio.run(dashboard_with_api_check.api_status())
+
+        assert data["api"]["status"] == "OK"
+
+    def test_html_status_page(self, dashboard_with_api_check: HealthCheckDashboard):
+        """html_status returns valid HTML response."""
+        resp = asyncio.run(dashboard_with_api_check.html_status())
+
+        assert resp.status_code == 200
+        body = resp.body.decode()
+        assert "Service Status" in body
+        assert "api" in body
 
 
-def test_anomaly_logging_and_recovery():
-    dash = HealthCheckDashboard()
-    call_count = 0
+class TestHealthCheckAnomalies:
+    """Tests for anomaly detection and recovery."""
 
-    async def flapping_check() -> CheckResult:
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            return CheckResult("DOWN", 0.0, "err")
-        return CheckResult("OK", 0.0)
+    def test_anomaly_logging_and_recovery(self, dashboard: HealthCheckDashboard):
+        """Anomalies are logged and recovery is tracked."""
+        call_count = 0
 
-    dash.register("svc", flapping_check)
+        async def flapping_check() -> CheckResult:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return CheckResult("DOWN", 0.0, "err")
+            return CheckResult("OK", 0.0)
 
-    asyncio.run(dash.run_check("svc"))
-    assert len(dash.history) == 1
-    assert dash.history[0]["result"].status == "DOWN"
+        dashboard.register("svc", flapping_check)
 
-    asyncio.run(dash.run_check("svc"))
-    assert len(dash.history) == 1
-    assert dash.results["svc"].status == "OK"
+        # First call: DOWN
+        asyncio.run(dashboard.run_check("svc"))
+        assert len(dashboard.history) == 1
+        assert dashboard.history[0]["result"].status == "DOWN"
+
+        # Second call: OK (recovery)
+        asyncio.run(dashboard.run_check("svc"))
+        assert len(dashboard.history) == 1
+        assert dashboard.results["svc"].status == "OK"
