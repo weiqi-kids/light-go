@@ -70,7 +70,9 @@ class TestWebSocketPredict:
         server, thread = _start_server()
         try:
             ws = connect(f"ws://127.0.0.1:{PORT}/ws/predict")
-            ws.send(json.dumps({"input": {"board": [[0]], "color": "black"}}))
+            # Use 9x9 board (minimum valid Go board size)
+            board_9x9 = [[0] * 9 for _ in range(9)]
+            ws.send(json.dumps({"input": {"board": board_9x9, "color": "black"}}))
             data = json.loads(ws.recv())
 
             assert data["output"] is not None
