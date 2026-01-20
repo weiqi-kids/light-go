@@ -13,13 +13,18 @@ sys.path.insert(0, str(ROOT))
 from api import gtp_interface
 
 
-@pytest.fixture()
-def gtp_client(monkeypatch):
-    """Start the GTP server and return a helper to send commands."""
-    monkeypatch.setattr(gtp_interface, "predict", lambda data: "D4", raising=False)
+def _create_gtp_client(monkeypatch=None, mock_predict=True):
+    """Helper to create a GTP client with optional predict mocking.
+
+    Args:
+        monkeypatch: pytest monkeypatch fixture (required if mock_predict=True)
+        mock_predict: Whether to mock the predict function
+    """
+    if mock_predict and monkeypatch is not None:
+        monkeypatch.setattr(gtp_interface, "predict", lambda data: "D4", raising=False)
+
     thread = threading.Thread(target=gtp_interface.main, daemon=True)
     thread.start()
-    # Wait for the server socket to be ready
     time.sleep(0.1)
     sock = socket.create_connection((gtp_interface.HOST, gtp_interface.PORT))
     file = sock.makefile("rw", encoding="utf-8", newline="\n")
@@ -36,53 +41,34 @@ def gtp_client(monkeypatch):
             lines.append(line.strip())
         return "\n".join(lines)
 
-    yield send
-
-    try:
+    def cleanup():
         try:
             file.write("quit\n")
             file.flush()
         except Exception:
             pass
-    finally:
-        file.close()
-        sock.close()
-        thread.join(timeout=2)
+        finally:
+            file.close()
+            sock.close()
+            thread.join(timeout=2)
+
+    return send, cleanup
+
+
+@pytest.fixture()
+def gtp_client(monkeypatch):
+    """Start the GTP server with mocked predict and return a helper to send commands."""
+    send, cleanup = _create_gtp_client(monkeypatch, mock_predict=True)
+    yield send
+    cleanup()
 
 
 @pytest.fixture()
 def gtp_client_real():
     """Start the GTP server without patching predict."""
-    thread = threading.Thread(target=gtp_interface.main, daemon=True)
-    thread.start()
-    time.sleep(0.1)
-    sock = socket.create_connection((gtp_interface.HOST, gtp_interface.PORT))
-    file = sock.makefile("rw", encoding="utf-8", newline="\n")
-
-    def send(cmd: str) -> str:
-        file.write(cmd + "\n")
-        file.flush()
-        lines = []
-        while True:
-            line = file.readline()
-            assert line != ""  # connection should remain open
-            if line == "\n":
-                break
-            lines.append(line.strip())
-        return "\n".join(lines)
-
+    send, cleanup = _create_gtp_client(mock_predict=False)
     yield send
-
-    try:
-        try:
-            file.write("quit\n")
-            file.flush()
-        except Exception:
-            pass
-    finally:
-        file.close()
-        sock.close()
-        thread.join(timeout=2)
+    cleanup()
 
 
 def test_gtp_interface_commands(gtp_client):

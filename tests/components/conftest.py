@@ -1,14 +1,12 @@
-"""Shared fixtures for component tests."""
+"""Shared fixtures for component tests.
+
+This module provides component-specific fixtures. Common fixtures like
+temp_dir, empty boards, and SGF content are inherited from tests/conftest.py.
+"""
 from __future__ import annotations
 
-import os
-import sys
-import tempfile
 import pytest
-from typing import Any, Dict, List, Tuple
-
-# Add project root to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from typing import Any, Dict, List
 
 from core.strategy_manager import StrategyManager
 from core.auto_learner import AutoLearner
@@ -17,7 +15,7 @@ Board = List[List[int]]
 
 
 # ---------------------------------------------------------------------------
-# Strategy Manager Fixtures
+# Mock Classes for Testing
 # ---------------------------------------------------------------------------
 
 class MockStrategy:
@@ -85,9 +83,17 @@ class MockMetaModel:
         return values[0]
 
 
+# ---------------------------------------------------------------------------
+# Strategy Manager Fixtures
+# ---------------------------------------------------------------------------
+
 @pytest.fixture
 def mock_strategy():
-    """Factory fixture to create MockStrategy instances."""
+    """Factory fixture to create MockStrategy instances.
+
+    Usage:
+        strategy = mock_strategy(prediction=(3, 3), stable=True)
+    """
     def _create(
         prediction: Any = None,
         stable: bool = False,
@@ -106,7 +112,6 @@ def mock_strategy():
 @pytest.fixture
 def strategy_manager(temp_dir):
     """Provide a StrategyManager instance with a temporary directory."""
-    from core.strategy_manager import StrategyManager
     return StrategyManager(temp_dir)
 
 
@@ -120,34 +125,14 @@ def strategy_manager_with_strategies(strategy_manager, mock_strategy):
 
 
 @pytest.fixture
-def strategy_manager(temp_dir) -> StrategyManager:
-    """Return a StrategyManager with a temporary directory."""
-    return StrategyManager(temp_dir)
-
-
-@pytest.fixture
 def auto_learner(strategy_manager) -> AutoLearner:
     """Return an AutoLearner with a StrategyManager."""
     return AutoLearner(strategy_manager)
 
 
-@pytest.fixture
-def empty_board_5x5() -> Board:
-    """Return a 5x5 empty board."""
-    return [[0] * 5 for _ in range(5)]
-
-
-@pytest.fixture
-def empty_board_9x9() -> Board:
-    """Return a 9x9 empty board."""
-    return [[0] * 9 for _ in range(9)]
-
-
-@pytest.fixture
-def empty_board_19x19() -> Board:
-    """Return a 19x19 empty board."""
-    return [[0] * 19 for _ in range(19)]
-
+# ---------------------------------------------------------------------------
+# Board Pattern Fixtures (specific to component tests)
+# ---------------------------------------------------------------------------
 
 @pytest.fixture
 def board_with_single_black_stone() -> Board:
@@ -155,22 +140,6 @@ def board_with_single_black_stone() -> Board:
     board = [[0] * 5 for _ in range(5)]
     board[2][2] = 1
     return board
-
-
-@pytest.fixture
-def make_board():
-    """Factory fixture to create boards with stones at specified positions.
-
-    Usage:
-        board = make_board(5, [(2, 2, 1), (0, 0, -1)])  # 5x5 with black at (2,2), white at (0,0)
-    """
-    def _make_board(size: int, stones: List[Tuple[int, int, int]] = None) -> Board:
-        board = [[0] * size for _ in range(size)]
-        if stones:
-            for x, y, color in stones:
-                board[y][x] = color
-        return board
-    return _make_board
 
 
 @pytest.fixture
@@ -212,45 +181,6 @@ def board_with_ko_scenario() -> Board:
     return board
 
 
-@pytest.fixture
-def simple_sgf_content() -> str:
-    """Return a simple 9x9 SGF game string."""
-    return "(;GM[1]FF[4]SZ[9]KM[7.5]RU[Chinese];B[ee];W[gc];B[cg])"
-
-
-@pytest.fixture
-def japanese_sgf_content() -> str:
-    """Return an SGF with Japanese rules."""
-    return "(;GM[1]FF[4]SZ[19]KM[6.5]RU[Japanese];B[pd];W[dp])"
-
-
-@pytest.fixture
-def sgf_with_handicap() -> str:
-    """Return an SGF with handicap stones."""
-    return "(;GM[1]FF[4]SZ[9]HA[2]KM[0.5]AB[gc][cg];W[ee])"
-
-
-@pytest.fixture
-def temp_dir():
-    """Provide a temporary directory that is cleaned up after test."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        yield tmpdir
-
-
-@pytest.fixture
-def temp_sgf_dir(temp_dir):
-    """Provide a temporary directory with a sample SGF file."""
-    sgf_dir = os.path.join(temp_dir, "sgf_data")
-    os.makedirs(sgf_dir, exist_ok=True)
-
-    sgf_content = "(;GM[1]FF[4]SZ[9]KM[7.5];B[ee];W[gc])"
-    sgf_path = os.path.join(sgf_dir, "test_game.sgf")
-    with open(sgf_path, "w") as f:
-        f.write(sgf_content)
-
-    return sgf_dir
-
-
 # ---------------------------------------------------------------------------
 # Engine Fixtures (Optimized for reuse)
 # ---------------------------------------------------------------------------
@@ -271,9 +201,9 @@ def shared_engine(tmp_path_factory):
 def trained_engine_factory(tmp_path_factory):
     """Module-scoped factory for pre-trained Engine.
 
-    Returns a tuple of (engine, output_dir, strategy_name) where the engine
-    has already been trained with sample SGF data. This avoids repeated
-    training across multiple test classes.
+    Returns a tuple of (engine, sgf_dir, output_dir, strategy_name) where
+    the engine has already been trained with sample SGF data. This avoids
+    repeated training across multiple test classes.
     """
     from core.engine import Engine
 
@@ -294,14 +224,3 @@ def trained_engine_factory(tmp_path_factory):
     strategy_name = engine.train(str(sgf_dir), str(output_dir))
 
     return engine, str(sgf_dir), str(output_dir), strategy_name
-
-
-# ---------------------------------------------------------------------------
-# Pytest Markers Configuration
-# ---------------------------------------------------------------------------
-
-def pytest_configure(config):
-    """Register custom markers."""
-    config.addinivalue_line(
-        "markers", "slow: marks tests as slow (deselect with '-m \"not slow\"')"
-    )
