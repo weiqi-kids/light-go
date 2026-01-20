@@ -107,7 +107,8 @@ class TestStrategyManagerRegistration:
 
         strategy_manager.save_strategies()
 
-        assert (tmp_path / "s1.pkl").exists()
+        # Check for either .joblib (if available) or .pkl file
+        assert (tmp_path / "s1.joblib").exists() or (tmp_path / "s1.pkl").exists()
 
         # Load in new manager
         mgr2 = StrategyManager(str(tmp_path))
