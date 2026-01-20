@@ -13,7 +13,7 @@ from api.gtp_interface import GTPServer
 
 
 @pytest.fixture
-def gtp_server():
+def gtp_server() -> GTPServer:
     """Return a fresh GTPServer instance."""
     return GTPServer()
 
@@ -90,8 +90,8 @@ class TestGTPBasicCommands:
 class TestGTPBoardsize:
     """Tests for boardsize command."""
 
-    @pytest.mark.parametrize("size", [9, 13, 19])
-    def test_boardsize_valid(self, gtp_server, size):
+    @pytest.mark.parametrize("size", [9, 13, 19], ids=["9x9", "13x13", "19x19"])
+    def test_boardsize_valid(self, gtp_server: GTPServer, size: int):
         """boardsize sets board size correctly."""
         response, should_quit = gtp_server.handle_boardsize([str(size)])
 
@@ -114,8 +114,12 @@ class TestGTPBoardsize:
 class TestGTPKomi:
     """Tests for komi command."""
 
-    @pytest.mark.parametrize("komi_str,expected", [("7.5", 7.5), ("6.5", 6.5), ("0", 0.0)])
-    def test_komi_valid(self, gtp_server, komi_str, expected):
+    @pytest.mark.parametrize(
+        "komi_str,expected",
+        [("7.5", 7.5), ("6.5", 6.5), ("0", 0.0)],
+        ids=["7.5", "6.5", "0.0"]
+    )
+    def test_komi_valid(self, gtp_server: GTPServer, komi_str: str, expected: float):
         """komi sets komi value correctly."""
         response, should_quit = gtp_server.handle_komi([komi_str])
 
@@ -138,8 +142,12 @@ class TestGTPKomi:
 class TestGTPPlay:
     """Tests for play command."""
 
-    @pytest.mark.parametrize("color,move", [("black", "D4"), ("white", "Q16"), ("black", "PASS")])
-    def test_play_valid(self, gtp_server, color, move):
+    @pytest.mark.parametrize(
+        "color,move",
+        [("black", "D4"), ("white", "Q16"), ("black", "PASS")],
+        ids=["black_d4", "white_q16", "black_pass"]
+    )
+    def test_play_valid(self, gtp_server: GTPServer, color: str, move: str):
         """play records move correctly."""
         response, should_quit = gtp_server.handle_play([color, move])
 
@@ -164,8 +172,8 @@ class TestGTPPlay:
 class TestGTPGenmove:
     """Tests for genmove command."""
 
-    @pytest.mark.parametrize("color", ["black", "white"])
-    def test_genmove_valid(self, gtp_server, color):
+    @pytest.mark.parametrize("color", ["black", "white"], ids=["black", "white"])
+    def test_genmove_valid(self, gtp_server: GTPServer, color: str):
         """genmove generates move for given color."""
         response, should_quit = gtp_server.handle_genmove([color])
 
@@ -211,13 +219,17 @@ class TestGTPDispatch:
 class TestGTPResponseFormat:
     """Tests for GTP response formatting."""
 
-    @pytest.mark.parametrize("prefix,ident,msg,expected_start", [
-        ("=", None, "result", "="),
-        ("?", None, "error msg", "?"),
-        ("=", "42", "result", "="),
-        ("=", None, "", "="),
-    ])
-    def test_format_response(self, prefix, ident, msg, expected_start):
+    @pytest.mark.parametrize(
+        "prefix,ident,msg,expected_start",
+        [
+            ("=", None, "result", "="),
+            ("?", None, "error msg", "?"),
+            ("=", "42", "result", "="),
+            ("=", None, "", "="),
+        ],
+        ids=["success", "error", "with_id", "empty_msg"]
+    )
+    def test_format_response(self, prefix: str, ident, msg: str, expected_start: str):
         """Response formatting follows GTP spec."""
         response = GTPServer._format_response(prefix, ident, msg)
 
@@ -257,8 +269,12 @@ class TestGTPIntegration:
 class TestEdgeCases:
     """Edge case tests for GTP server."""
 
-    @pytest.mark.parametrize("color", ["BLACK", "White", "WHITE", "black"])
-    def test_case_insensitive_color(self, gtp_server, color):
+    @pytest.mark.parametrize(
+        "color",
+        ["BLACK", "White", "WHITE", "black"],
+        ids=["upper_black", "mixed_white", "upper_white", "lower_black"]
+    )
+    def test_case_insensitive_color(self, gtp_server: GTPServer, color: str):
         """Colors are case insensitive."""
         gtp_server.handle_play([color, "D4"])
 

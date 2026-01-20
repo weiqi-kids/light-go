@@ -72,20 +72,20 @@ class TestGTPBasicCommands:
 class TestGTPBoardConfiguration:
     """Tests for board configuration commands."""
 
-    @pytest.mark.parametrize("board_size", [9, 13, 19])
-    def test_boardsize(self, gtp_server: GTPServer, board_size: int):
+    @pytest.mark.parametrize("size", [9, 13, 19], ids=["9x9", "13x13", "19x19"])
+    def test_boardsize(self, gtp_server: GTPServer, size: int):
         """boardsize sets board size correctly."""
-        response, should_quit = gtp_server.handle_boardsize([str(board_size)])
+        response, should_quit = gtp_server.handle_boardsize([str(size)])
 
-        assert gtp_server.board_size == board_size
+        assert gtp_server.board_size == size
         assert should_quit is False
 
-    @pytest.mark.parametrize("komi_value", [0.0, 6.5, 7.5])
-    def test_komi(self, gtp_server: GTPServer, komi_value: float):
+    @pytest.mark.parametrize("komi", [0.0, 6.5, 7.5], ids=["0.0", "6.5", "7.5"])
+    def test_komi(self, gtp_server: GTPServer, komi: float):
         """komi sets komi value correctly."""
-        response, should_quit = gtp_server.handle_komi([str(komi_value)])
+        response, should_quit = gtp_server.handle_komi([str(komi)])
 
-        assert gtp_server.komi == komi_value
+        assert gtp_server.komi == komi
         assert should_quit is False
 
     def test_clear_board(self, gtp_server: GTPServer):
@@ -106,7 +106,7 @@ class TestGTPGameplay:
         ("black", "D4"),
         ("white", "Q16"),
         ("black", "PASS"),
-    ])
+    ], ids=["black_d4", "white_q16", "black_pass"])
     def test_play(self, gtp_server: GTPServer, color: str, move: str):
         """play records moves correctly."""
         response, should_quit = gtp_server.handle_play([color, move])
@@ -114,7 +114,7 @@ class TestGTPGameplay:
         assert (color, move) in gtp_server.moves
         assert should_quit is False
 
-    @pytest.mark.parametrize("color", ["black", "white"])
+    @pytest.mark.parametrize("color", ["black", "white"], ids=["black", "white"])
     def test_genmove(self, gtp_server: GTPServer, color: str):
         """genmove generates a valid move using real engine."""
         gtp_server.handle_boardsize(["9"])

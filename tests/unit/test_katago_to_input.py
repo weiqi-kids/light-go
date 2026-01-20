@@ -2,32 +2,33 @@
 
 Tests coordinate conversion and file processing for KataGo format data.
 """
+from __future__ import annotations
+
 import json
-import pathlib
-import sys
-from unittest.mock import patch, mock_open
+from unittest.mock import mock_open, patch
 
 import pytest
-
-# Add project root to path
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
 from input.katago_to_input import katago_to_coords, process_katago_file
 
 
+# ---------------------------------------------------------------------------
+# Test Classes
+# ---------------------------------------------------------------------------
+
 class TestKatagoToCoords:
     """Tests for katago_to_coords() function."""
 
-    @pytest.mark.parametrize("move,board_size,expected", [
+    @pytest.mark.parametrize("move,size,expected", [
         ("A19", 19, (0, 0)),
         ("T1", 19, (18, 18)),
         ("K10", 19, (9, 9)),
     ], ids=["top_left", "bottom_right", "center"])
-    def test_valid_coordinates(self, move, board_size, expected):
+    def test_valid_coordinates(self, move: str, size: int, expected: tuple):
         """Valid move strings convert to correct coordinates."""
-        assert katago_to_coords(move, board_size) == expected
+        assert katago_to_coords(move, size) == expected
 
-    @pytest.mark.parametrize("move,board_size", [
+    @pytest.mark.parametrize("move,size", [
         ("PASS", 19),
         ("A20", 19),     # Out of bounds
         ("Z10", 19),     # Invalid column
@@ -35,9 +36,9 @@ class TestKatagoToCoords:
         (None, 19),      # None input
         (123, 19),       # Wrong type
     ], ids=["pass", "out_of_bounds", "invalid_col", "incomplete", "none", "wrong_type"])
-    def test_invalid_coordinates_return_none(self, move, board_size):
+    def test_invalid_coordinates_return_none(self, move, size: int):
         """Invalid move strings return None."""
-        assert katago_to_coords(move, board_size) is None
+        assert katago_to_coords(move, size) is None
 
 
 class TestProcessKatagoFile:
