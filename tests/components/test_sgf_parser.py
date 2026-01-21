@@ -322,8 +322,8 @@ class TestForbiddenMoves:
 class TestBoardSizes:
     """Tests for various board sizes."""
 
-    @pytest.mark.parametrize("size", [5, 9, 13, 19])
-    def test_parse_various_board_sizes(self, size):
+    @pytest.mark.parametrize("size", [5, 9, 13, 19], ids=["5x5", "9x9", "13x13", "19x19"])
+    def test_parse_various_board_sizes(self, size: int):
         """Parse games on various standard board sizes."""
         sgf = f"(;GM[1]FF[4]SZ[{size}];B[cc])"
         matrix, metadata, _ = parse_sgf(sgf, from_string=True)
@@ -336,8 +336,12 @@ class TestBoardSizes:
 class TestRulesets:
     """Tests for different ruleset handling."""
 
-    @pytest.mark.parametrize("ruleset", ["Chinese", "Japanese", "Korean", "AGA", "NZ"])
-    def test_parse_rulesets_case_insensitive(self, ruleset):
+    @pytest.mark.parametrize(
+        "ruleset",
+        ["Chinese", "Japanese", "Korean", "AGA", "NZ"],
+        ids=["chinese", "japanese", "korean", "aga", "nz"]
+    )
+    def test_parse_rulesets_case_insensitive(self, ruleset: str):
         """Rulesets should be parsed case-insensitively."""
         sgf = f"(;GM[1]FF[4]SZ[9]RU[{ruleset}];B[ee])"
         _, metadata, _ = parse_sgf(sgf, from_string=True)

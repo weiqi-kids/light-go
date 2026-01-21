@@ -89,8 +89,8 @@ class TestGameStats:
         assert stats["black_stones"] == 10
         assert stats["white_stones"] == 10
 
-    @pytest.mark.parametrize("size", [5, 9, 13, 19])
-    def test_various_board_sizes(self, size):
+    @pytest.mark.parametrize("size", [5, 9, 13, 19], ids=["5x5", "9x9", "13x13", "19x19"])
+    def test_various_board_sizes(self, size: int):
         """Stats work for various board sizes."""
         board = [[0] * size for _ in range(size)]
         board[size // 2][size // 2] = 1
@@ -175,8 +175,8 @@ class TestAssignTraining:
         {"position_type": "middlegame", "liberties": 15},
         {"position_type": "endgame", "territory_diff": 5},
         {},
-    ])
-    def test_assign_with_various_features(self, auto_learner, features):
+    ], ids=["opening", "middlegame", "endgame", "empty"])
+    def test_assign_with_various_features(self, auto_learner, features: dict):
         """assign_training works with various feature types."""
         auto_learner.discover_strategy({})
 
@@ -299,8 +299,8 @@ class TestEdgeCases:
         except (TypeError, AttributeError):
             pass  # Expected for some implementations
 
-    @pytest.mark.parametrize("score", [100.0, -100.0, 0.0, 1.0])
-    def test_feedback_with_extreme_scores(self, auto_learner, score):
+    @pytest.mark.parametrize("score", [100.0, -100.0, 0.0, 1.0], ids=["max", "min", "zero", "one"])
+    def test_feedback_with_extreme_scores(self, auto_learner, score: float):
         """Feedback with extreme score values."""
         name = auto_learner.discover_strategy({})
 
