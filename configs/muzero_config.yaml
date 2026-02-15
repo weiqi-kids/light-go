@@ -1,0 +1,53 @@
+# MuZero 訓練配置（b28c512）
+# 使用方式: python scripts/train_muzero.py
+
+# 模型參數
+model:
+  board_size: 19
+  num_input_planes: 2       # Light-Go 2-plane 編碼
+  hidden_size: 512          # c512
+  num_blocks: 28            # b28
+
+# Phase 1: 監督預訓練
+# 使用 KataGo 超人水平棋譜進行預訓練
+supervised:
+  epochs: 50
+  batch_size: 8             # 較小以節省記憶體
+  gradient_accumulation: 1  # 不使用累積
+  learning_rate: 0.0005     # 較小 batch 用較低學習率
+  weight_decay: 0.0001
+  mixed_precision: false    # MPS 不完全支援
+
+# Phase 2: Gumbel MCTS 自我對弈
+# 使用 Gumbel MCTS 進行自我對弈（只需 2-16 次模擬）
+selfplay:
+  iterations: 50
+  games_per_iteration: 100
+  num_simulations: 16       # Gumbel MCTS 只需 16 次（相當於傳統 800+）
+  num_sampled_actions: 16   # Gumbel-Top-k 的 k 值
+  temperature_threshold: 30 # 前 N 手使用高溫度探索
+
+# MuZero 特定參數
+muzero:
+  td_steps: 10              # TD(n) 步數
+  unroll_steps: 5           # K 步展開
+  discount: 0.997           # 折扣因子
+  replay_buffer_size: 10000 # 最大軌跡數
+
+# MCTS 參數
+mcts:
+  c_puct: 1.4               # UCB 探索常數
+  dirichlet_alpha: 0.3      # Dirichlet 雜訊 alpha
+  dirichlet_epsilon: 0.25   # Dirichlet 雜訊比例
+
+# 路徑配置
+paths:
+  training_data: data/lightgo/training_data/katago_v2/
+  output_dir: data/models/muzero/
+  sgf_dir: data/sgf/muzero_selfplay/
+
+# 資源估算（供參考）
+# - 模型參數: ~108M (b28c512)
+# - 記憶體需求: ~4-6 GB
+# - Phase 1 時間: 每 epoch 2-3 小時
+# - Phase 2 時間（Gumbel MCTS）: 每局 1-2 分鐘

@@ -1,227 +1,98 @@
-# ⚫️⚪️ Weiqi.kids Light-Go 計畫
+# Light-Go
 
----
+**Light-Go** 是一個輕量級圍棋 AI 訓練框架，使用 MuZero 演算法與 Gumbel MCTS 進行高效訓練。
 
-## 📁 專案目錄結構
+## 核心特點
+
+- **2-Plane 輕量編碼**：只使用 Signed Liberties + Forbidden Points，比 KataGo 22-plane 簡潔
+- **MuZero 架構**：學習環境動態模型，無需人工規則
+- **Gumbel MCTS**：只需 16 次模擬達到傳統 800+ 次的效果
+- **架構演化**：神經網路架構可透過基因操作自動演化
+
+## 快速開始
+
+### 安裝
+
+```bash
+pip install -r requirements.txt
+```
+
+### 訓練
+
+```bash
+# Phase 1: 監督預訓練（使用 KataGo 棋譜）
+python scripts/train_muzero.py --phase 1 --epochs 50
+
+# Phase 2: Gumbel MCTS 自我對弈
+python scripts/train_muzero.py --phase 2 --resume data/models/muzero/phase1_best.pt
+
+# 完整訓練（Phase 1 + Phase 2）
+python scripts/train_muzero.py
+```
+
+### 測試
+
+```bash
+pytest                                    # 全部測試
+pytest tests/unit/test_game_rules.py -v   # 單一檔案
+```
+
+## 訓練配置
+
+| 參數 | 值 |
+|------|-----|
+| 模型架構 | b28c512（28 blocks, 512 hidden）|
+| 參數量 | ~108M |
+| 輸入編碼 | 2-plane（Signed Liberties + Forbidden）|
+| 搜索算法 | Gumbel MCTS（16 次模擬）|
+
+## 專案結構
 
 ```
-Light-Go/
-├── main.py
-├── hf_models/                     # HF模型目錄
-│   ├── __init__.py
-│   ├── configuration_go_ai.py     # HF配置類
-│   ├── modeling_go_ai.py          # HF模型類
-│   ├── tokenization_go_ai.py      # 位置編碼器
-│   └── processing_go_ai.py        # 數據預處理器
-│
-├── input/                         # 🧠 將輸入端資料統一變成棋盤輸入矩陣 liberty 與 forbidden
-│ ├── sgf_to_input.py              # 處理 SGF 檔案輸入
-│ ├── katago_to_input.py           # 處理 KataGo trainingdata 檔案輸入
-│ ├── gtp_to_input.py              # 處理 Go Text Protocol 輸入
-│ └── streaming_to_input.py        # 處理 棋盤串流影像 輸入
-│
-├── core/                          # 新增核心邏輯
-│ ├── engine.py                    # 主引擎
-│ ├── strategy_manager.py          # 自動管理所有策略
-│ └── auto_learner.py              # 自動學習和發現
-│
+light-go/
+├── scripts/
+│   └── train_muzero.py      # 主要訓練腳本
+├── core/
+│   ├── muzero/              # MuZero 實作
+│   │   ├── networks.py      # 三大網路 (h, g, f)
+│   │   ├── trainer.py       # 訓練器
+│   │   └── replay_buffer.py # 經驗回放
+│   ├── gumbel_mcts.py       # Gumbel MCTS
+│   └── game_rules.py        # 圍棋規則
+├── input/
+│   └── lightgo_encoder.py   # 2-plane 編碼器
 ├── data/
-│ ├── models                       # 保存訓練結果
-│ │ ├── strategies                 # 學習到的各種策略
-│ │ │ ├── a.pkl + a.pt             # 策略知識 a 模型與分配器權重
-│ │ │ ├── b.pkl + b.pt             # 策略知識 b 模型與分配器權重
-│ │ │ └── ...
-│ │ │
-│ │ ├── narrator                   # 解釋各種策略的的內容
-│ │ │ ├── beginner_style.pkl
-│ │ │ ├── professional_style.pkl
-│ │ │ └── humorous_style.pkl
-│ │ │
-│ │ └── time # 學習到的時間分配
-│ │   ├── v1.pkl + v1.pt           # v1 學習到的時間分配模型與分配器權重
-│ │   └── playerA.pkl + playerA.pt # playerA 學習到的時間分配模型與分配器權重
-│ │ 
-│ ├── memory                       # 盤面狀況記錄
-│ │ └── qdrant                     # Qdrant 紀錄檔
-│ │ 
-│ └── sgf                          # 對局紀錄
-│
-├── tests/                         # 🆕 測試架構
-│ ├── unit/
-│ ├── integration/
-│ └── performance/
-│
-├── tools/                         # 🆕 工具腳本
-│ ├── train_strategy.py            # 訓練新策略
-│ ├── evaluate_models.py           # 模型評估
-│ ├── self_play_generator.py       # 生成自對弈數據
-│ └── deploy_to_production.py      # 部署工具
-│
-├── monitoring/
-│ ├── performance.py               # 效能監控
-│ ├── logging.py                   # 日誌管理
-│ └── health_check.py              # 健康檢查
-│
-└── api/                           # 🆕 API接口
-  ├── rest_api.py                  # REST API
-  ├── websocket_api.py             # WebSocket API
-  └── gtp_interface.py             # GTP協議接口
+│   ├── lightgo/training_data/katago_v2/  # 訓練資料（132,870 個 NPZ）
+│   └── models/muzero/       # 訓練產出
+└── docs/
+    ├── TRAINING_PLAN.md     # 訓練計劃
+    └── training_lessons_learned.md  # 經驗教訓
 ```
 
----
+## Gumbel MCTS 優勢
 
-## 🚀 啟動模式設計
+| 特性 | 傳統 MCTS | Gumbel MCTS |
+|------|-----------|-------------|
+| 模擬次數 | 800+ | 2-16 |
+| 採樣方式 | UCB | Gumbel-Top-k |
+| 淘汰機制 | 無 | Sequential Halving |
 
-### 🕹 指令列模式
+## 文件
 
-`main.py` 提供三種 `--mode` 選項：
+- [訓練計劃](docs/TRAINING_PLAN.md)
+- [訓練經驗教訓](docs/training_lessons_learned.md)
+- [資料目錄說明](data/README.md)
+- [CLAUDE.md](CLAUDE.md) - Claude Code 指引
 
-1. **train**：從 SGF 目錄訓練新策略
+## API 服務
 
-   ```bash
-   python main.py --mode train --data data/training --output data/models
-   ```
-
-   完成後會在指定的 `output` 目錄產生策略檔案。
-
-2. **evaluate**：以現有策略評估資料集
-
-   ```bash
-   python main.py --mode evaluate --data data/eval --output data/models
-   ```
-
-   結果會輸出基本統計資訊 (JSON)。
-
-3. **play**：從單一 SGF 狀態決策下一手
-
-   ```bash
-   python main.py --mode play --data game.sgf --output data/models
-   ```
-
-   於終端機顯示預測座標 `(x, y)`。
-
-### 🖥 服務啟動
-
-若需啟動 API 或其他介面，可直接執行對應模組：
-
-- **REST API**
-
-  ```bash
-  python -m api.rest_api  # 預設埠號 8000
-  ```
-
-- **WebSocket API**
-
-  ```bash
-  python -m api.websocket_api
-  ```
-
-- **GTP 介面**
-
-  ```bash
-  python -m api.gtp_interface
-  ```
-
-
----
-
-## 🧠 棋盤輸入矩陣介紹 liberty 與 forbidden （靜態特徵） input/
-
-輸入：
-- liberty 每個棋子位置(x座標, y座標, 氣)的無序集合，黑棋正數、白棋負數 → 簡單的3維向量
-- forbidden 禁著點位置
-- 隨機洗牌：消除順序偏見
-- 使用 `core.liberty.count_liberties()` 可以在取得棋盤後重新計算各棋子的氣數
-
-```
-liberty = [
-  (3, 4, 3),  # 黑棋3氣
-  (5, 6, -2), # 白棋2氣
-  // ... 只包含棋子的位置，空點不會出現
-]
+```bash
+python api/gtp_server.py      # GTP 協定
+python -m api.rest_api        # REST API
+python -m api.websocket_api   # WebSocket API
 ```
 
-```
-forbidden = [
-  (9, 10),  # 位置(9,10)是禁著點
-  // ... 只包含禁著的位置
-]
-```
+## 參考
 
-```
-metadata = {
-  "rules": {                 # 🆕 規則設定
-    "ruleset": "chinese",    # 中國規則/日本規則/韓國規則
-    "komi": 7.5,             # 貼目
-    "board_size": 19,        # 棋盤大小
-    "handicap": 0            # 讓子數
-  },
-  "capture": {
-    "black": 1,              # 黑棋提子
-    "white": 1,              # 白棋提子
-  },
-  "next_move": "black",      # 下一步顏色
-  "step": []                 # 對局步驟,
-  "time_control": {
-    "main_time_seconds": 600,
-    "byo_yomi": {
-      "period_time_seconds": 30,
-      "periods": 3
-    }
-  },
-  "time": [{
-    "player": "black",       # 黑方
-    "main_time_seconds": 100 # 基本時限剩餘秒數
-    "periods": 3             # byo_yomi 剩餘次數
-  },{
-    "player": "white",       # 白方
-    "main_time_seconds": 100 # 基本時限剩餘秒數
-    "periods": 2             # byo_yomi 剩餘次數
-  }]
-}
-```
-
----
-
-## 🧪 動態萃取發現層：系統自動生成的狀態 data/models/strategies
-
-系統運行時：
-- 自動嘗試所有可用策略
-- 自動評估哪個最適合當前局面
-- 自動學習和更新策略
-- 自動發現新策略並保存為新文件
-
-```
-特徵發現網絡：
-├── 編碼器：將盤面編碼為高維潛在空間
-├── 探索器：在潛在空間中尋找有意義的方向
-├── 解碼器：將潛在特徵轉回可解釋的概念
-└── 驗證器：測試新特徵的預測能力
-```
-
-新策略自動出現：
-a.pkl → b.pkl → c.pkl → d.pkl → ...
-
-```
-系統自動學會：
-├── 什麼時候用哪個策略
-├── 如何分配思考時間
-├── 如何發現新的模式
-└── 如何持續改進
-```
-
----
-
-## ⏳ 用時分配  data/models/time
-
-依照不同「strategies 耗時」與「當下剩餘時間」，決定的用時分配策略。
-
---- 
-
-## 🧑‍🏫 不同風格的解說 data/narrator
-
---- 
-
-## 📦 曾經下過的局面與講解紀錄，方便調閱歷史資料 data/memory/qdrant
-
----
+- [Gumbel MCTS 論文](https://arxiv.org/abs/2201.03167)
+- [MuZero 論文](https://arxiv.org/abs/1911.08265)

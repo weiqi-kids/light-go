@@ -1,0 +1,477 @@
+# Light-Go 架構演化配置
+# 此配置文件定義了演化系統的所有關鍵參數
+
+# ============================================================================
+# 演化系統主要參數
+# ============================================================================
+evolution:
+  # 種群大小：同時維護的架構變體數量
+  # 建議：10-20（較小種群收斂快，較大種群多樣性高）
+  population_size: 10
+
+  # 演化代數：總共運行多少代
+  # 建議：50-100（更多代數可能發現更好的架構）
+  num_generations: 50
+
+  # 每代對弈局數：用於評估架構性能
+  # 建議：200-500（更多對弈評估更準確但更慢）
+  games_per_generation: 200
+
+  # MCTS 模擬次數：每步棋的搜索深度
+  # 建議：400-800（CPU 用 400，GPU 可用 800）
+  mcts_simulations: 400
+
+# ============================================================================
+# 選擇策略參數
+# ============================================================================
+selection:
+  # 精英保留比例：每代保留表現最好的架構比例
+  # 範圍：0.1-0.3（20% 意味著保留前 2 個，種群大小 10）
+  elite_ratio: 0.2
+
+  # 突變率：基因發生隨機變化的概率
+  # 範圍：0.1-0.3（過高可能破壞好架構，過低演化太慢）
+  mutation_rate: 0.2
+
+  # 雜交率：兩個父代架構混合產生子代的概率
+  # 範圍：0.2-0.4（雜交可以組合不同架構的優勢）
+  crossover_rate: 0.3
+
+# ============================================================================
+# 評估系統參數
+# ============================================================================
+evaluation:
+  # 錦標賽對弈數：兩個架構互相對弈的局數
+  # 建議：20-50（用於 ELO 評級計算）
+  tournament_games: 20
+
+  # ELO K 因子：評級變化的敏感度
+  # 建議：32（標準值，新手可用 40，專業級用 16）
+  elo_k_factor: 32
+
+  # 初始 ELO 評級
+  initial_elo: 1000
+
+  # 評估模式：'tournament' 或 'round_robin'
+  # tournament: 隨機配對，更快
+  # round_robin: 每個都對弈，更準確
+  evaluation_mode: 'tournament'
+
+# ============================================================================
+# 基礎模型配置
+# ============================================================================
+base_model:
+  # 訓練好的基礎模型路徑
+  path: 'data/models/from_katago/model.pt'
+
+  # 模型架構參數（必須與訓練時一致）
+  num_blocks: 10
+  num_filters: 128
+  num_input_planes: 22
+  board_size: 19
+
+# ============================================================================
+# 架構搜索空間
+# ============================================================================
+architecture_search_space:
+  # 網絡深度範圍（殘差塊數量）
+  num_blocks:
+    min: 5
+    max: 20
+    mutation_step: 1  # 每次突變增減的塊數
+
+  # 濾波器數量範圍
+  base_filters:
+    options: [64, 128, 256, 512]
+    # 突變時可選的濾波器數量
+
+  # 卷積核大小
+  kernel_sizes:
+    options: [3, 5, 7]
+    # 支持的卷積核尺寸
+
+  # 模塊類型
+  block_types:
+    options: ['residual', 'dense', 'bottleneck']
+    # residual: 標準殘差塊
+    # dense: 密集連接塊（DenseNet）
+    # bottleneck: 瓶頸塊（節省參數）
+
+  # Squeeze-Excitation (SE) 模塊
+  use_se_blocks:
+    enabled: true
+    # SE 模塊可提升性能但增加計算量
+
+  # Dropout 率範圍
+  dropout_rate:
+    min: 0.0
+    max: 0.3
+    mutation_step: 0.05
+
+# ============================================================================
+# 訓練與優化參數
+# ============================================================================
+training:
+  # 每個架構的訓練 epochs
+  epochs_per_generation: 5
+
+  # 批次大小
+  batch_size: 64
+
+  # 學習率
+  learning_rate: 0.001
+
+  # 權重衰減（L2 正則化）
+  weight_decay: 0.0001
+
+  # 梯度裁剪閾值
+  gradient_clip: 1.0
+
+  # 是否使用混合精度訓練（需要 GPU）
+  use_amp: false
+
+# ============================================================================
+# 權重繼承配置（Net2Net）
+# ============================================================================
+weight_transfer:
+  # 是否啟用權重繼承（極大加速訓練）
+  enabled: true
+
+  # 繼承策略：'direct', 'interpolate', 'random_init'
+  # direct: 直接複製相同層
+  # interpolate: 新層用插值初始化
+  # random_init: 新層隨機初始化
+  strategy: 'direct'
+
+  # 新層初始化方法
+  new_layer_init: 'kaiming_normal'
+
+# ============================================================================
+# 數據與資源管理
+# ============================================================================
+resources:
+  # 自我對弈工作器數量
+  num_self_play_workers: 4
+
+  # 訓練工作器數量（建議 = GPU 數量）
+  num_training_workers: 1
+
+  # 評估工作器數量
+  num_evaluation_workers: 2
+
+  # 設備配置
+  device: 'cpu'  # 'cpu', 'cuda', 'mps'
+
+  # 最大內存使用（GB）
+  max_memory_gb: 16
+
+# ============================================================================
+# 保存與日誌配置
+# ============================================================================
+output:
+  # 輸出目錄
+  base_dir: 'data/evolution_results'
+
+  # 保存檢查點頻率（每 N 代保存一次）
+  checkpoint_frequency: 5
+
+  # 是否保存所有架構（否則只保存最佳）
+  save_all_architectures: false
+
+  # 最多保留的檢查點數量
+  max_checkpoints: 10
+
+  # 日誌級別：'DEBUG', 'INFO', 'WARNING', 'ERROR'
+  log_level: 'INFO'
+
+  # 是否生成可視化報告
+  generate_visualizations: true
+
+# ============================================================================
+# 多樣性維護
+# ============================================================================
+diversity:
+  # 是否啟用多樣性獎勵
+  enabled: true
+
+  # 多樣性權重（vs 性能權重）
+  # 0.0 = 只看性能，1.0 = 只看多樣性
+  diversity_weight: 0.1
+
+  # 多樣性計算方法：'structural', 'performance', 'combined'
+  diversity_metric: 'structural'
+
+  # 最小多樣性閾值（低於此值強制注入隨機架構）
+  min_diversity_threshold: 0.3
+
+# ============================================================================
+# 早停與收斂檢測
+# ============================================================================
+early_stopping:
+  # 是否啟用早停
+  enabled: true
+
+  # 無改善代數閾值
+  patience: 10
+
+  # 最小改善閾值（ELO 分）
+  min_improvement: 10
+
+  # 收斂判定：性能提升 < min_improvement 連續 patience 代
+
+# ============================================================================
+# 實驗追蹤（可選）
+# ============================================================================
+experiment_tracking:
+  # 是否啟用實驗追蹤
+  enabled: false
+
+  # 追蹤工具：'tensorboard', 'wandb', 'mlflow'
+  backend: 'tensorboard'
+
+  # 實驗名稱
+  experiment_name: 'light_go_evolution'
+
+  # 追蹤指標
+  tracked_metrics:
+    - 'elo_rating'
+    - 'win_rate'
+    - 'architecture_diversity'
+    - 'training_loss'
+    - 'inference_speed'
+
+# ============================================================================
+# 高級選項
+# ============================================================================
+advanced:
+  # 是否使用多保真度優化（快速預篩選）
+  use_multi_fidelity: false
+
+  # 快速評估對弈數（用於初步篩選）
+  quick_eval_games: 50
+
+  # 是否使用性能預測器
+  use_performance_predictor: false
+
+  # 預測器訓練數據點數
+  predictor_min_samples: 20
+
+# ============================================================================
+# 強化學習訓練配置 (Phase 2)
+# ============================================================================
+rl_training:
+  # 經驗重放緩衝區
+  replay_buffer:
+    # 最大樣本數量
+    max_size: 500000
+    # 持久化路徑
+    persistence_path: 'data/replay_buffer'
+    # 採樣時使用優先級
+    prioritized_sampling: false
+    # 優先級指數 (alpha)
+    priority_alpha: 0.6
+
+  # 資料增強
+  augmentation:
+    # 是否啟用 D4 對稱增強
+    enabled: true
+    # 增強倍數 (最大 8，使用全部 D4 對稱)
+    num_augmentations: 8
+
+  # 學習率調度
+  lr_schedule:
+    # 調度類型: 'step', 'cosine', 'warmup_cosine', 'exponential', 'plateau'
+    type: 'warmup_cosine'
+    # 初始學習率
+    initial_lr: 0.01
+    # 最終學習率 (用於 cosine)
+    final_lr: 0.0001
+    # 衰減步數 (用於 step)
+    decay_steps: [400000, 600000]
+    # 衰減因子 (用於 step/exponential)
+    decay_factor: 0.1
+    # 預熱步數 (用於 warmup_cosine)
+    warmup_steps: 1000
+    # 總步數 (用於 cosine)
+    total_steps: 1000000
+
+  # 政策改進驗證
+  improvement_check:
+    # 檢查頻率 (每 N 次訓練後)
+    frequency: 1000
+    # 勝率閾值 (超過此值才更新最佳模型)
+    win_threshold: 0.55
+    # 評估對弈數
+    num_eval_games: 100
+    # 是否使用 ELO 評級
+    use_elo: true
+
+  # AlphaGo Zero 訓練循環
+  training_loop:
+    # 每次迭代的自我對弈局數
+    games_per_iteration: 100
+    # 每次迭代的訓練批次數
+    batches_per_iteration: 1000
+    # 最大迭代次數
+    max_iterations: 1000
+    # 訓練批次大小
+    batch_size: 256
+
+# ============================================================================
+# 分散式自我對弈配置 (Phase 2)
+# ============================================================================
+distributed:
+  # 是否啟用分散式模式
+  enabled: false
+
+  # 工作器配置
+  workers:
+    # 工作器數量
+    num_workers: 4
+    # 心跳間隔 (秒)
+    heartbeat_interval: 30
+    # 每個工作器的對弈局數 (每批)
+    games_per_batch: 10
+
+  # 模型服務器配置
+  model_server:
+    # 共享模型路徑
+    shared_path: 'data/models/shared'
+    # 模型更新間隔 (秒)
+    update_interval: 100
+    # 最大保留版本數
+    max_versions: 5
+
+  # 資料收集器配置
+  data_collector:
+    # 收集超時 (秒)
+    collection_timeout: 300
+    # 最小樣本數 (觸發訓練)
+    min_examples: 10000
+    # 是否持久化到磁盤
+    persist_to_disk: true
+
+  # 健康監控配置
+  health_monitor:
+    # 心跳超時 (秒)
+    heartbeat_timeout: 60
+    # 是否自動重啟失敗的工作器
+    auto_restart: true
+    # 最大重啟次數
+    max_restarts: 3
+    # 狀態報告間隔 (秒)
+    status_report_interval: 60
+
+# ============================================================================
+# 時間管理配置 (Phase 2)
+# ============================================================================
+time_management:
+  # 默認時間控制類型
+  default_control: 'byoyomi'
+
+  # 預設時間控制設置
+  presets:
+    # 標準賽制
+    standard:
+      control_type: 'byoyomi'
+      main_time_seconds: 1800  # 30 分鐘
+      byoyomi_periods: 5
+      byoyomi_time: 30
+
+    # 快棋賽制
+    blitz:
+      control_type: 'fischer'
+      main_time_seconds: 300  # 5 分鐘
+      increment_seconds: 5
+
+    # 閃電戰
+    bullet:
+      control_type: 'sudden_death'
+      main_time_seconds: 60  # 1 分鐘
+
+  # 複雜度估算參數
+  complexity_estimation:
+    # 是否啟用自適應時間分配
+    adaptive_enabled: true
+    # 複雜度權重
+    tactical_weight: 0.4
+    strategic_weight: 0.3
+    liberty_weight: 0.3
+    # 最大時間倍數
+    max_time_multiplier: 2.0
+    # 最小時間倍數
+    min_time_multiplier: 0.5
+
+  # 時間分配策略
+  allocation_strategy:
+    # 策略類型: 'uniform', 'complexity_weighted', 'phase_aware', 'critical_moment', 'adaptive'
+    type: 'adaptive'
+    # 時間壓力閾值 (剩餘時間 < 此比例進入時間壓力模式)
+    time_pressure_threshold: 0.1
+    # 開局時間比例
+    opening_time_ratio: 0.15
+    # 中盤時間比例
+    midgame_time_ratio: 0.6
+    # 收官時間比例
+    endgame_time_ratio: 0.25
+
+  # 基礎 MCTS 模擬次數
+  base_simulations: 800
+  # 最小模擬次數 (時間壓力時)
+  min_simulations: 100
+  # 最大模擬次數
+  max_simulations: 3200
+
+# ============================================================================
+# 策略解說系統配置 (Phase 2)
+# ============================================================================
+narrator:
+  # 默認解說風格
+  default_style: 'educational'
+
+  # 默認語言
+  default_language: 'en'
+
+  # 支援的語言
+  supported_languages:
+    - 'en'
+    - 'zh'
+
+  # 風格配置
+  styles:
+    educational:
+      verbosity: 1.0
+      use_technical_terms: true
+      include_alternatives: true
+      include_statistics: true
+      max_reasons: 5
+
+    professional:
+      verbosity: 0.6
+      use_technical_terms: true
+      include_alternatives: true
+      include_statistics: false
+      max_reasons: 3
+
+    casual:
+      verbosity: 0.7
+      use_technical_terms: false
+      include_alternatives: false
+      include_statistics: false
+      max_reasons: 2
+
+    minimal:
+      verbosity: 0.2
+      use_technical_terms: false
+      include_alternatives: false
+      include_statistics: false
+      max_reasons: 1
+
+  # 模板目錄
+  template_dir: 'data/models/narrator/templates'
+
+  # 是否在 GTP 中自動啟用解說
+  auto_enable_in_gtp: false
+
+  # 解說輸出格式
+  output_format: 'text'  # 'text', 'json', 'sgf_comment'

@@ -9,29 +9,8 @@ from core.strategy_manager import StrategyManager
 from core.auto_learner import AutoLearner
 from core.mcts import MCTS, mcts_search
 
-try:  # hf_models may not be present in lightweight environments
-    from hf_models.modeling_go_ai import GoAIModel
-except Exception:  # pragma: no cover - fallback placeholder
-    class GoAIModel:  # type: ignore
-        """Fallback placeholder model used when hf_models is unavailable."""
-
-        def train(self, data: List[Any]) -> None:  # noqa: D401 - simple stub
-            """Pretend to train."""
-            pass
-
-        def predict(self, sample: Any) -> Any:
-            """Return a dummy prediction."""
-            return None
-
-        def save_pretrained(self, path: str) -> None:
-            """Write a tiny placeholder checkpoint to ``path``."""
-            with open(path, "wb") as f:
-                f.write(b"model")
-
-        @classmethod
-        def from_pretrained(cls, path: str) -> "GoAIModel":
-            """Load a dummy model from ``path`` (contents ignored)."""
-            return cls()
+# Now using real GoAIModel from hf_models
+from hf_models.modeling_go_ai import GoAIModel
 
 
 class Engine:
