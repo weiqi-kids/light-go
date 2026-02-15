@@ -15,9 +15,9 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-# Load main.py as a module using importlib
+# Load cli/main.py as a module using importlib
 ROOT = Path(__file__).resolve().parents[2]
-spec = importlib.util.spec_from_file_location("cli_main", ROOT / "main.py")
+spec = importlib.util.spec_from_file_location("cli_main", ROOT / "cli" / "main.py")
 cli_main = importlib.util.module_from_spec(spec)
 sys.modules["cli_main"] = cli_main
 spec.loader.exec_module(cli_main)

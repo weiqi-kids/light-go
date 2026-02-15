@@ -7,12 +7,17 @@ from __future__ import annotations
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
+# Skip all tests if gradio is not installed
+pytest.importorskip("gradio", reason="gradio not installed")
+
 # Disable Gradio analytics before importing app
 os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
 
 # Patch gradio.mount_gradio_app to avoid UI initialization
 with patch("gradio.mount_gradio_app", side_effect=lambda app, *a, **k: app):
-    import app as app_module
+    from services import monitoring_dashboard as app_module
 
 
 # ---------------------------------------------------------------------------
@@ -27,7 +32,7 @@ class TestMonitoringHealthEndpoint:
         dash = MagicMock()
         dash.api_status = AsyncMock(return_value={"status": "ok"})
 
-        with patch("app.health_check.build_default_dashboard", return_value=dash):
+        with patch("services.monitoring_dashboard.health_check.build_default_dashboard", return_value=dash):
             resp = app_module._client.get("/monitoring/health")
 
             assert resp.status_code == 200
@@ -47,7 +52,7 @@ class TestMonitoringPerformanceEndpoint:
                 return False
             stats = {"cpu": 1}
 
-        with patch("app.performance.PerformanceMonitor", return_value=Dummy()):
+        with patch("services.monitoring_dashboard.performance.PerformanceMonitor", return_value=Dummy()):
             resp = app_module._client.get("/monitoring/performance")
 
             assert resp.status_code == 200
@@ -63,7 +68,7 @@ class TestMonitoringLoggingEndpoint:
         q.summary.return_value = {"duration": 1}
         q.logs = [1]
 
-        with patch("app.log_utils.PerformanceLogQuery", return_value=q):
+        with patch("services.monitoring_dashboard.log_utils.PerformanceLogQuery", return_value=q):
             resp = app_module._client.get("/monitoring/logging", params={"file": "f.json"})
 
             q.load_logs.assert_called_with("f.json")
