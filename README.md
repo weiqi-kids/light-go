@@ -96,3 +96,7 @@ python -m api.websocket_api   # WebSocket API
 
 - [Gumbel MCTS 論文](https://arxiv.org/abs/2201.03167)
 - [MuZero 論文](https://arxiv.org/abs/1911.08265)
+
+---
+
+Maintained by Light. I build and maintain websites with AI as a service: [arthurs.tw](https://arthurs.tw/?utm_source=github&utm_medium=readme&utm_campaign=oss)
