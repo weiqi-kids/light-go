@@ -57,7 +57,6 @@ python examples/tutorials/00_minimal_self_evolution.py
 > **注意**：主要訓練請使用 `scripts/train_muzero.py`
 
 這些腳本保留供參考：
-- `train_from_katago*.py` - KataGo 22-plane 格式訓練（舊方案）
 - `train_lightgo_*.py` - LightGo 2/4-plane 格式訓練（舊方案）
 
 **推薦的訓練方式**：
@@ -151,7 +150,7 @@ python examples/evaluation/evaluate_model.py \
 | **模型架構** | b28c512 (~108M 參數) | 可自訂 |
 | **搜索算法** | Gumbel MCTS (16 次模擬) | 傳統 MCTS (800+) |
 | **訓練方式** | Phase 1 監督 + Phase 2 自我對弈 | 僅監督學習 |
-| **訓練腳本** | `scripts/train_muzero.py` | `examples/training/` |
+| **訓練腳本** | `scripts/train_muzero.py` | 已移除 |
 | **推薦場景** | 生產使用 | 參考/實驗 |
 
 ## 💡 最佳實踐
@@ -213,7 +212,7 @@ python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
 ### 該用 MuZero 還是舊訓練方式？
 
 推薦使用 MuZero + Gumbel MCTS（`scripts/train_muzero.py`）。
-舊方式的腳本保留在 `examples/training/` 僅供參考。
+舊方式的腳本（`examples/training/`）已移除：其編碼與現行輪走方視角編碼不相容。
 
 ## 📚 更多資源
 

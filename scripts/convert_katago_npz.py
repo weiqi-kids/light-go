@@ -19,7 +19,7 @@ import os
 import sys
 import multiprocessing as mp
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 
@@ -68,7 +68,7 @@ def katago_sample_to_lightgo(
     policy_target: np.ndarray,
     global_target: np.ndarray,
     board_size: int = 19,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
     """將單筆 KataGo 樣本轉成 LightGo (features, policy, value)。
 
     Args:
@@ -81,6 +81,7 @@ def katago_sample_to_lightgo(
         features: (2, N, N) float32，輪走方視角
         policy: (N*N+1,) float32，總和為 1（pass = 最後一格）
         value: (1,) float32，輪走方視角 [-1, 1] = P(win) - P(loss)
+        若 policy 全部落在禁著點（遮罩後總和為 0），回傳 None，呼叫端應略過此樣本。
     """
     planes = unpack_katago_binary(packed, board_size)
     own = planes[KATAGO_PLANE_OWN].astype(bool)
@@ -88,18 +89,18 @@ def katago_sample_to_lightgo(
     # plane 6 = 輪走方的 ko-ban；實測 3071 筆樣本中 121/128 個點為「空點且四鄰皆對手子」
     # 的簡單劫型，其餘為 superko 禁點，兩者對輪走方都是禁著。
     ko_ban = planes[KATAGO_PLANE_KO_BAN].astype(bool)
-    # 注意：禁著點的自殺判定採 LightGo 規則（禁止自殺）。KataGo 部分樣本的規則允許
-    # 多子自殺（globalInputNC[:, 8] = 1），其 policy 可能在這些點上有少量機率
-    #（實測 3071 筆中 19 筆、總質量 ≈ 0.07%）。
     features = encode_planes(own, opp, ko_ban)
 
+    # 禁著點的自殺判定採 LightGo 規則（禁止自殺）。KataGo 部分樣本的規則允許
+    # 多子自殺（globalInputNC[:, 8] = 1），其 policy 可能落在這些點上
+    #（實測 3071 筆中 19 筆、總質量 ≈ 0.07%）→ 把禁著點的機率清零後重新正規化。
     num_actions = board_size * board_size + 1
     policy = policy_target[0, :num_actions].astype(np.float32)
+    policy[:-1][features[1].ravel() > 0] = 0.0
     policy_sum = policy.sum()
-    if policy_sum > 0:
-        policy = policy / policy_sum
-    else:
-        policy = np.ones(num_actions, dtype=np.float32) / num_actions
+    if policy_sum <= 0:
+        return None
+    policy = policy / policy_sum
 
     value = np.array([global_target[0] - global_target[1]], dtype=np.float32)
     return features, policy, value
@@ -128,13 +129,21 @@ def convert_single_npz(npz_path: str, output_dir: str) -> Tuple[int, int]:
         policies_list = []
         values_list = []
 
+        skipped = 0
         for i in range(num_samples):
-            features, policy, value = katago_sample_to_lightgo(
+            sample = katago_sample_to_lightgo(
                 packed[i], policy_targets[i], global_targets[i]
             )
+            if sample is None:
+                skipped += 1
+                continue
+            features, policy, value = sample
             features_list.append(features)
             policies_list.append(policy)
             values_list.append(value)
+
+        if not features_list:
+            return 0, skipped
 
         # 輸出檔案名
         output_name = Path(npz_path).stem + '_lightgo.npz'
@@ -148,7 +157,7 @@ def convert_single_npz(npz_path: str, output_dir: str) -> Tuple[int, int]:
             value_targets=np.array(values_list)     # (N, 1)
         )
 
-        return num_samples, 0
+        return num_samples - skipped, skipped
 
     except Exception as e:
         logger.warning(f"轉換失敗 {npz_path}: {e}")

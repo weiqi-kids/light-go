@@ -1,5 +1,7 @@
 # Light-Go 性能優化結果
 
+> **注意**：本文提到的 `train_from_katago_optimized.py` 已移除（舊編碼與現行輪走方視角編碼不相容）。現行流程：`scripts/convert_katago_npz.py` → `scripts/train_muzero.py`。
+
 > **注意**：本文檔為歷史測試結果（2026-01-11）。目前推薦的訓練方式是使用
 > `scripts/train_muzero.py`（MuZero + Gumbel MCTS）。詳見 [訓練計劃](TRAINING_PLAN.md)。
 

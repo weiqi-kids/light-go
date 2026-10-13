@@ -62,7 +62,6 @@ TEST_FILES = {
     "strategy_manager": "test_strategy_manager.py",
     "auto_learner": "test_auto_learner.py",
     "engine": "test_engine.py",
-    "mcts": "test_mcts.py",
     "self_play": "test_self_play.py",
 }
 

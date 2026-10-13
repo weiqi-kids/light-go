@@ -90,7 +90,7 @@ def _to_katago_packed(board: GoBoard, color: str) -> np.ndarray:
 def _katago_features(board: GoBoard, color: str) -> np.ndarray:
     """Encode a GoBoard position through the KataGo conversion path."""
     policy_target = np.zeros((2, 362), dtype=np.float32)
-    policy_target[0, 0] = 1.0
+    policy_target[0, 361] = 1.0  # pass：永遠合法，不會被遮罩剔除
     global_target = np.zeros(64, dtype=np.float32)
     features, _, _ = convert_katago_npz.katago_sample_to_lightgo(
         _to_katago_packed(board, color), policy_target, global_target
@@ -290,3 +290,37 @@ class TestKatagoSampleConversion:
 
         assert planes[0, 3, 4] > 0  # 白子
         assert planes[0, 3, 3] < 0  # 黑子
+
+    def test_policy_on_forbidden_points_is_masked_and_renormalized(
+        self, make_position: Callable[[str], Tuple[GoBoard, str]]
+    ):
+        """Policy mass on forbidden points (e.g. multi-stone suicide) is dropped."""
+        board, _ = make_position("suicide")
+        policy_target = np.zeros((2, 362), dtype=np.float32)
+        policy_target[0, 0] = 1.0   # (0,0)：白方的自殺點
+        policy_target[0, 361] = 3.0  # pass
+        global_target = np.zeros(64, dtype=np.float32)
+
+        features, policy, _ = convert_katago_npz.katago_sample_to_lightgo(
+            _to_katago_packed(board, "w"), policy_target, global_target
+        )
+
+        assert features[1, 0, 0] == 1.0
+        assert policy[0] == 0.0
+        assert policy[361] == pytest.approx(1.0)
+        assert policy.sum() == pytest.approx(1.0)
+
+    def test_sample_dropped_when_all_policy_mass_is_forbidden(
+        self, make_position: Callable[[str], Tuple[GoBoard, str]]
+    ):
+        """A sample whose whole policy lies on forbidden points returns None."""
+        board, _ = make_position("suicide")
+        policy_target = np.zeros((2, 362), dtype=np.float32)
+        policy_target[0, 0] = 1.0
+        global_target = np.zeros(64, dtype=np.float32)
+
+        sample = convert_katago_npz.katago_sample_to_lightgo(
+            _to_katago_packed(board, "w"), policy_target, global_target
+        )
+
+        assert sample is None
