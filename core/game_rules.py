@@ -17,6 +17,8 @@ from typing import Set, Tuple, List, Optional, Dict
 from copy import deepcopy
 from sgfmill import boards
 
+from core.liberty import count_liberties, group_and_liberties
+
 
 class GoBoard:
     """Go board with complete rule implementation.
@@ -111,6 +113,17 @@ class GoBoard:
                 neighbors.append((r, c))
         return neighbors
 
+    def _group_and_liberties(
+        self, row: int, col: int
+    ) -> Tuple[Set[Tuple[int, int]], Set[Tuple[int, int]]]:
+        """Return the group at (row, col) and its liberties, as (row, col) sets.
+
+        Delegates to :func:`core.liberty.group_and_liberties` over sgfmill's
+        ``board[row][col]`` grid (x = col, y = row).
+        """
+        group, libs = group_and_liberties(self.board.board, col, row)
+        return {(r, c) for c, r in group}, {(r, c) for c, r in libs}
+
     def get_group(self, row: int, col: int) -> Set[Tuple[int, int]]:
         """Get all stones in the group containing (row, col).
 
@@ -122,24 +135,11 @@ class GoBoard:
         Returns
         -------
         Set[Tuple[int, int]]
-            Set of positions in the group
+            Set of positions in the group (empty if the point is empty)
         """
-        color = self.board.get(row, col)
-        if color is None:
+        if self.board.get(row, col) is None:
             return set()
-
-        group = set()
-        to_check = [(row, col)]
-
-        while to_check:
-            r, c = to_check.pop()
-            if (r, c) in group:
-                continue
-
-            if self.board.get(r, c) == color:
-                group.add((r, c))
-                to_check.extend(self.get_neighbors(r, c))
-
+        group, _ = self._group_and_liberties(row, col)
         return group
 
     def count_liberties(self, group: Set[Tuple[int, int]]) -> int:
@@ -183,16 +183,9 @@ class GoBoard:
 
         for nr, nc in self.get_neighbors(row, col):
             if self.board.get(nr, nc) == opponent:
-                group = self.get_group(nr, nc)
-                if group and group not in checked_groups:
+                group, liberties = self._group_and_liberties(nr, nc)
+                if group not in checked_groups:
                     checked_groups.append(group)
-                    # Count liberties of opponent group
-                    # The move at (row, col) will occupy one liberty
-                    liberties = set()
-                    for gr, gc in group:
-                        for gnr, gnc in self.get_neighbors(gr, gc):
-                            if self.board.get(gnr, gnc) is None:
-                                liberties.add((gnr, gnc))
                     # If (row, col) is the only liberty, group will be captured
                     if liberties == {(row, col)}:
                         captured.append(group)
@@ -412,8 +405,6 @@ class GoBoard:
         List[Tuple[int, int, int]]
             Liberty matrix: (x, y, liberty_count) where positive=black, negative=white
         """
-        from core.liberty import count_liberties
-
         # Convert board to matrix format expected by count_liberties
         matrix = [[0 for _ in range(self.size)] for _ in range(self.size)]
 

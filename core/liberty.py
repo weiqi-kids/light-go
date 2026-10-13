@@ -1,9 +1,15 @@
-"""Utilities for counting liberties on a Go board."""
+"""Utilities for counting liberties on a Go board.
+
+This is the single group/liberty flood fill used by the project.  A board is
+a ``board[y][x]`` grid whose empty points are ``0`` or ``None``; any other
+value is a stone colour.  This covers both int matrices (``1`` black,
+``-1`` white) and sgfmill's internal grid (``Board.board``, ``'b'``/``'w'``).
+"""
 from __future__ import annotations
 
-from typing import List, Set, Tuple
+from typing import Any, List, Sequence, Set, Tuple
 
-Board = List[List[int]]
+Board = Sequence[Sequence[Any]]
 
 
 def neighbors(x: int, y: int, size: int):
@@ -29,7 +35,7 @@ def group_and_liberties(board: Board, x: int, y: int) -> Tuple[Set[Tuple[int, in
         cx, cy = stack.pop()
         for nx, ny in neighbors(cx, cy, size):
             val = board[ny][nx]
-            if val == 0:
+            if val is None or val == 0:
                 liberties.add((nx, ny))
             elif val == color and (nx, ny) not in group:
                 group.add((nx, ny))
@@ -38,19 +44,22 @@ def group_and_liberties(board: Board, x: int, y: int) -> Tuple[Set[Tuple[int, in
 
 
 def count_liberties(board: Board) -> List[Tuple[int, int, int]]:
-    """Return a list of ``(x, y, liberties)`` for all stones on the board."""
+    """Return ``(x, y, liberties)`` for every stone, 1-based coordinates.
+
+    Liberties are positive for black (``1`` / ``'b'``) and negative for white.
+    """
     size = len(board)
     visited: Set[Tuple[int, int]] = set()
     result: List[Tuple[int, int, int]] = []
     for y in range(size):
         for x in range(size):
             color = board[y][x]
-            if color == 0 or (x, y) in visited:
+            if color is None or color == 0 or (x, y) in visited:
                 continue
             group, libs = group_and_liberties(board, x, y)
             for gx, gy in group:
                 visited.add((gx, gy))
-                val = len(libs) if color == 1 else -len(libs)
+                val = len(libs) if color in (1, "b") else -len(libs)
                 result.append((gx + 1, gy + 1, val))
     return result
 

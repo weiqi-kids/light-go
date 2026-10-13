@@ -4,14 +4,19 @@ This module tests the liberty counting functionality for Go stones:
 - neighbors(): Get adjacent positions on the board
 - group_and_liberties(): Find connected groups and their liberties
 - count_liberties(): Count liberties for all stones on the board
+- sgfmill grids (``Board.board``, empty = ``None``) as input, and GoBoard /
+  sgf_to_input which delegate to this module
 
 Optimized with pytest.mark.parametrize for reduced code duplication.
 """
 from __future__ import annotations
 
 import pytest
+from sgfmill import boards
 
+from core.game_rules import GoBoard
 from core.liberty import count_liberties, group_and_liberties, neighbors
+from input.sgf_to_input import convert_from_string
 
 
 class TestNeighbors:
@@ -164,6 +169,53 @@ class TestCountLiberties:
         liberties = {(x, y, v) for x, y, v in result}
         assert (1, 1, 2) in liberties   # black corner
         assert (5, 5, -2) in liberties  # white corner
+
+
+class TestLibertySgfmillGrid:
+    """Tests for sgfmill grids (``'b'``/``'w'``/``None``) and delegating callers."""
+
+    def test_group_and_liberties_on_sgfmill_grid(self):
+        """Empty points given as None count as liberties."""
+        board = boards.Board(5)
+        board.play(2, 2, "b")
+        board.play(2, 3, "b")
+        board.play(1, 2, "w")
+        group, liberties = group_and_liberties(board.board, 2, 2)
+        assert group == {(2, 2), (3, 2)}
+        assert len(liberties) == 5
+
+    @pytest.mark.parametrize("color,expected_sign", [
+        ("b", 1),
+        ("w", -1),
+    ], ids=["black", "white"])
+    def test_count_liberties_sign_on_sgfmill_grid(self, color: str, expected_sign: int):
+        """'b' is positive and 'w' is negative, like 1 / -1."""
+        board = boards.Board(5)
+        board.play(0, 0, color)
+        assert count_liberties(board.board) == [(1, 1, expected_sign * 2)]
+
+    def test_goboard_group_matches_liberty(self):
+        """GoBoard.get_group/count_liberties agree with group_and_liberties."""
+        go_board = GoBoard(size=5)
+        for row, col, color in [(2, 2, "b"), (2, 3, "b"), (1, 2, "w")]:
+            go_board.board.play(row, col, color)
+        group = go_board.get_group(2, 3)
+        assert group == {(2, 2), (2, 3)}
+        assert go_board.count_liberties(group) == 5
+        assert go_board.get_group(0, 0) == set()
+
+    def test_goboard_capture_uses_shared_liberties(self):
+        """A group whose last liberty is the move point is reported captured."""
+        go_board = GoBoard(size=5)
+        for row, col, color in [(0, 0, "w"), (1, 0, "b")]:
+            go_board.board.play(row, col, color)
+        assert go_board.get_captured_groups(0, 1, "b") == [{(0, 0)}]
+        assert go_board.get_captured_groups(2, 2, "b") == []
+
+    def test_sgf_convert_uses_liberty_module(self):
+        """convert() returns 0-based signed liberties for every stone."""
+        data = convert_from_string("(;GM[1]SZ[5];B[aa];W[ee])")
+        assert set(data["liberty"]) == {(0, 0, 2), (4, 4, -2)}
 
 
 class TestEdgeCases:

@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Tuple
 import os
 from sgfmill import sgf, boards
 
-from core.liberty import count_liberties  # backwards compatibility
+from core.liberty import count_liberties
 
 BoardMatrix = List[List[int]]
 
@@ -15,30 +15,6 @@ BoardMatrix = List[List[int]]
 # ---------------------------------------------------------------------------
 # Utility helpers
 # ---------------------------------------------------------------------------
-
-def _count_liberties_board(board: boards.Board) -> List[Tuple[int, int, int]]:
-    """Count liberties for all stones on ``board`` using sgfmill."""
-    size = board.side
-    visited = set()
-    result: List[Tuple[int, int, int]] = []
-    for row in range(size):
-        for col in range(size):
-            color = board.get(row, col)
-            if color is None or (row, col) in visited:
-                continue
-            group = board._make_group(row, col, color)
-            libs = set()
-            for r, c in group.points:
-                for nr, nc in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
-                    if 0 <= nr < size and 0 <= nc < size:
-                        if board.get(nr, nc) is None:
-                            libs.add((nr, nc))
-            for r, c in group.points:
-                visited.add((r, c))
-                conv_row = size - 1 - r
-                val = len(libs) if color == "b" else -len(libs)
-                result.append((c + 1, conv_row + 1, val))
-    return result
 
 def _board_to_matrix(board: boards.Board) -> BoardMatrix:
     """Convert ``sgfmill`` board to a matrix of ``int`` values."""
@@ -184,8 +160,8 @@ def convert(src: str, step: int | None = None, *, from_string: bool = False) -> 
     """
     matrix, metadata, board = parse_sgf(src, step, from_string=from_string)
 
-    liberties_1b = _count_liberties_board(board)
-    liberty = [(r - 1, c - 1, v) for r, c, v in liberties_1b]
+    liberties_1b = count_liberties(matrix)
+    liberty = [(x - 1, y - 1, v) for x, y, v in liberties_1b]
 
     forbidden = _compute_forbidden(board, metadata["next_move"])
 
