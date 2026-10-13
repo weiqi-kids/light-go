@@ -21,6 +21,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from core.muzero.networks import MuZeroNetworks
 from core.muzero.replay_buffer import MuZeroReplayBuffer
+from core.sample_store import ArraySampleDataset
 from core.learning_scheduler import (
     GoTrainingScheduler,
     WarmupCosineScheduler,
@@ -32,36 +33,13 @@ from core.learning_scheduler import (
 logger = logging.getLogger(__name__)
 
 
-class SupervisedDataset(Dataset):
-    """監督學習資料集
+class SupervisedDataset(ArraySampleDataset):
+    """監督學習資料集（記憶體中的陣列）
 
-    用於 Phase 1 監督預訓練，從 NPZ 檔案載入資料。
+    用於 Phase 1 監督預訓練。LightGo NPZ schema 與載入邏輯由
+    ``core.sample_store`` 統一負責；本類別保留舊名稱與建構參數
+    ``(features, policies, values)``，並會剔除含 NaN/Inf 的樣本。
     """
-
-    def __init__(self, features: np.ndarray, policies: np.ndarray, values: np.ndarray):
-        """
-        Parameters
-        ----------
-        features : np.ndarray
-            輸入特徵 (N, C, H, W)
-        policies : np.ndarray
-            目標策略 (N, num_actions)
-        values : np.ndarray
-            目標價值 (N,)
-        """
-        self.features = features.astype(np.float32)
-        self.policies = policies.astype(np.float32)
-        self.values = values.astype(np.float32)
-
-    def __len__(self) -> int:
-        return len(self.features)
-
-    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        return {
-            'features': torch.tensor(self.features[idx]),
-            'policy': torch.tensor(self.policies[idx]),
-            'value': torch.tensor(self.values[idx])
-        }
 
 
 class MuZeroTrainer:

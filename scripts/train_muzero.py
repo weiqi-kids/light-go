@@ -30,17 +30,18 @@ from typing import Optional, List, Dict, Tuple
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 
 # 添加專案根目錄
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from core.muzero.networks import MuZeroNetworks
-from core.muzero.trainer import MuZeroTrainer, SupervisedDataset
+from core.muzero.trainer import MuZeroTrainer
 from core.muzero.replay_buffer import MuZeroReplayBuffer, Trajectory
 from core.game_rules import GoBoard
 from core.gumbel_mcts import GumbelMCTS
+from core.sample_store import open_sample_dataset
 
 logging.basicConfig(
     level=logging.INFO,
@@ -130,266 +131,6 @@ class MuZeroModelAdapter(torch.nn.Module):
         return policy_logits, value
 
 
-# ========== 資料載入 ==========
-
-class MuZeroNPZDataset(Dataset):
-    """從 LightGo NPZ 檔案載入訓練資料（用於 MuZero 監督預訓練）"""
-
-    def __init__(self, data_dir: str, max_files: Optional[int] = None):
-        self.features: List[np.ndarray] = []
-        self.policies: List[np.ndarray] = []
-        self.values: List[float] = []
-        self._load_npz_files(data_dir, max_files)
-
-    def _load_npz_files(self, data_dir: str, max_files: Optional[int]) -> None:
-        data_path = Path(data_dir)
-        npz_files = sorted(data_path.glob("*.npz"))
-
-        if max_files:
-            npz_files = npz_files[:max_files]
-
-        logger.info(f"載入 {len(npz_files)} 個 NPZ 檔案...")
-
-        for i, npz_file in enumerate(npz_files):
-            try:
-                data = np.load(npz_file)
-                inputs = data['inputs']  # (N, 2, 19, 19)
-                policies = data['policy_targets']  # (N, 362)
-                values = data['value_targets']  # (N, 1)
-
-                for j in range(len(inputs)):
-                    value = values[j].flatten()[0] if values[j].size > 1 else float(values[j])
-                    self.features.append(inputs[j].astype(np.float32))
-                    self.policies.append(policies[j].astype(np.float32))
-                    self.values.append(np.float32(value))
-
-                if (i + 1) % 500 == 0:
-                    logger.info(f"  已載入 {i + 1}/{len(npz_files)} 檔案, "
-                               f"{len(self.features)} 個樣本")
-
-            except Exception as e:
-                logger.debug(f"載入 {npz_file} 失敗: {e}")
-
-        logger.info(f"總共載入 {len(self.features)} 個訓練樣本")
-
-    def __len__(self) -> int:
-        return len(self.features)
-
-    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        return {
-            'features': torch.from_numpy(self.features[idx]),
-            'policy': torch.from_numpy(self.policies[idx]),
-            'value': torch.tensor(self.values[idx], dtype=torch.float32)
-        }
-
-
-class StreamingNPZDataset(Dataset):
-    """流式載入 NPZ 檔案，不預載全部資料到記憶體
-
-    適用於大量訓練資料（如 600 萬+ 樣本）的場景。
-    使用 LRU 快取來減少重複讀取同一檔案的開銷。
-    """
-
-    def __init__(self, data_dir: str, cache_size: int = 100):
-        """
-        Args:
-            data_dir: NPZ 檔案目錄
-            cache_size: LRU 快取大小（檔案數）
-        """
-        self.data_dir = Path(data_dir)
-        self.npz_files: List[Path] = []
-        self.index_map: List[Tuple[int, int]] = []  # (file_idx, sample_idx)
-        self._file_cache: Dict[int, Dict[str, np.ndarray]] = {}
-        self._cache_order: List[int] = []
-        self._cache_size = cache_size
-
-        self._build_index()
-
-    def _build_index(self) -> None:
-        """建立索引表，只讀取每個檔案的樣本數"""
-        self.npz_files = sorted(self.data_dir.glob("*.npz"))
-        logger.info(f"掃描 {len(self.npz_files)} 個 NPZ 檔案...")
-
-        self.index_map = []  # 重置索引
-        total_samples = 0
-        for file_idx, npz_file in enumerate(self.npz_files):
-            try:
-                # 只讀取檔案頭來取得樣本數
-                with np.load(npz_file) as data:
-                    n_samples = len(data['inputs'])
-
-                for sample_idx in range(n_samples):
-                    self.index_map.append((file_idx, sample_idx))
-
-                total_samples += n_samples
-
-                if (file_idx + 1) % 5000 == 0:
-                    logger.info(f"  已掃描 {file_idx + 1}/{len(self.npz_files)} 檔案, "
-                               f"{total_samples} 個樣本")
-            except Exception as e:
-                logger.debug(f"掃描 {npz_file} 失敗: {e}")
-
-        logger.info(f"總共 {total_samples} 個訓練樣本（流式載入模式）")
-
-    def rescan(self) -> int:
-        """重新掃描目錄，納入新檔案
-
-        Returns:
-            新增的樣本數
-        """
-        old_count = len(self.index_map)
-        self._file_cache.clear()  # 清除快取
-        self._cache_order.clear()
-        self._build_index()
-        new_count = len(self.index_map)
-        added = new_count - old_count
-        if added > 0:
-            logger.info(f"新增 {added} 個樣本（總計 {new_count}）")
-        return added
-
-    def _get_file_data(self, file_idx: int) -> Dict[str, np.ndarray]:
-        """取得檔案資料（帶 LRU 快取）"""
-        if file_idx in self._file_cache:
-            # 移到最近使用
-            self._cache_order.remove(file_idx)
-            self._cache_order.append(file_idx)
-            return self._file_cache[file_idx]
-
-        # 載入檔案
-        data = dict(np.load(self.npz_files[file_idx]))
-
-        # 加入快取
-        self._file_cache[file_idx] = data
-        self._cache_order.append(file_idx)
-
-        # 清理超出快取大小的舊檔案
-        while len(self._cache_order) > self._cache_size:
-            old_idx = self._cache_order.pop(0)
-            del self._file_cache[old_idx]
-
-        return data
-
-    def __len__(self) -> int:
-        return len(self.index_map)
-
-    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        file_idx, sample_idx = self.index_map[idx]
-        data = self._get_file_data(file_idx)
-
-        features = data['inputs'][sample_idx].astype(np.float32)
-        policy = data['policy_targets'][sample_idx].astype(np.float32)
-        value = data['value_targets'][sample_idx].flatten()[0]
-        if hasattr(value, '__len__'):
-            value = float(value)
-
-        return {
-            'features': torch.from_numpy(features),
-            'policy': torch.from_numpy(policy),
-            'value': torch.tensor(value, dtype=torch.float32)
-        }
-
-
-class BatchLoadingDataset(Dataset):
-    """批次隨機載入資料集
-
-    每個 epoch 隨機選取一批 NPZ 檔案載入記憶體，
-    解決流式載入的 I/O 瓶頸問題，同時控制記憶體用量。
-
-    特點：
-    - 無需預處理，直接使用現有 NPZ 檔案
-    - 記憶體用量可控（取決於 max_samples）
-    - 每個 epoch 可以看到不同的資料子集
-    """
-
-    def __init__(
-        self,
-        data_dir: str,
-        num_files: int = 2000,
-        max_samples: int = 200_000
-    ):
-        """
-        Args:
-            data_dir: NPZ 檔案目錄
-            num_files: 每批隨機選取的檔案數
-            max_samples: 每批最大樣本數
-        """
-        self.data_dir = Path(data_dir)
-        self.all_files = sorted(self.data_dir.glob("*.npz"))
-        self.num_files = num_files
-        self.max_samples = max_samples
-
-        if len(self.all_files) == 0:
-            raise ValueError(f"在 {data_dir} 找不到任何 NPZ 檔案")
-
-        logger.info(f"找到 {len(self.all_files)} 個 NPZ 檔案")
-
-        # 初始載入
-        self.features: np.ndarray = np.array([])
-        self.policies: np.ndarray = np.array([])
-        self.values: np.ndarray = np.array([])
-        self.reload()
-
-    def reload(self) -> int:
-        """重新隨機載入一批資料
-
-        Returns:
-            載入的樣本數
-        """
-        import random
-
-        # 隨機選取檔案
-        n_files = min(self.num_files, len(self.all_files))
-        selected_files = random.sample(self.all_files, n_files)
-
-        features_list: List[np.ndarray] = []
-        policies_list: List[np.ndarray] = []
-        values_list: List[np.ndarray] = []
-        total_samples = 0
-
-        for f in selected_files:
-            try:
-                data = np.load(f)
-                n = len(data['inputs'])
-
-                features_list.append(data['inputs'])
-                policies_list.append(data['policy_targets'])
-                values_list.append(data['value_targets'])
-                total_samples += n
-
-                if total_samples >= self.max_samples:
-                    break
-            except Exception as e:
-                logger.debug(f"載入 {f} 失敗: {e}")
-                continue
-
-        if len(features_list) == 0:
-            raise ValueError("無法載入任何資料")
-
-        # 合併並截斷
-        self.features = np.concatenate(features_list)[:self.max_samples].astype(np.float32)
-        self.policies = np.concatenate(policies_list)[:self.max_samples].astype(np.float32)
-        self.values = np.concatenate(values_list)[:self.max_samples].astype(np.float32)
-
-        logger.info(f"已載入 {len(self.features)} 個樣本（從 {len(selected_files)} 個檔案）")
-        return len(self.features)
-
-    def __len__(self) -> int:
-        return len(self.features)
-
-    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        value = self.values[idx]
-        if hasattr(value, '__len__'):
-            value = float(value.flatten()[0])
-        else:
-            value = float(value)
-
-        return {
-            'features': torch.from_numpy(self.features[idx]),
-            'policy': torch.from_numpy(self.policies[idx]),
-            'value': torch.tensor(value, dtype=torch.float32)
-        }
-
-
 # ========== 工具函數 ==========
 
 def get_device() -> str:
@@ -463,19 +204,18 @@ def train_phase1(
     if config.get('streaming', False) and loading_mode != 'batch':
         loading_mode = 'streaming'
 
-    if loading_mode == 'batch':
-        logger.info("使用批次隨機載入模式（推薦）")
-        dataset = BatchLoadingDataset(
-            config['data_dir'],
-            num_files=config.get('batch_num_files', 2000),
-            max_samples=config.get('batch_max_samples', 200_000)
-        )
-    elif loading_mode == 'streaming':
-        logger.info("使用流式載入模式（較慢）")
-        dataset = StreamingNPZDataset(config['data_dir'])
-    else:
-        logger.info("使用預載模式（需大量記憶體）")
-        dataset = MuZeroNPZDataset(config['data_dir'])
+    mode_desc = {'batch': '批次隨機載入模式（推薦）',
+                 'streaming': '流式載入模式（較慢）',
+                 'memory': '預載模式（需大量記憶體）'}
+    if loading_mode not in mode_desc:
+        loading_mode = 'memory'  # 其他值一律視為預載（沿用舊行為）
+    logger.info(f"使用{mode_desc[loading_mode]}")
+    dataset = open_sample_dataset(
+        config['data_dir'],
+        loading_mode,
+        num_files=config.get('batch_num_files', 2000),
+        max_samples=config.get('batch_max_samples', 200_000)
+    )
 
     if len(dataset) == 0:
         raise ValueError("沒有找到訓練資料！")
@@ -527,9 +267,8 @@ def train_phase1(
     history = {'train_loss': [], 'val_loss': []}
 
     for epoch in range(start_epoch, config['supervised_epochs']):
-        # batch 模式：每個 epoch 重新隨機載入一批資料
-        if loading_mode == 'batch' and epoch > 0:
-            dataset.reload()
+        # 每個 epoch 更新資料：batch 模式重新隨機載入，streaming 模式納入新檔案
+        if epoch > 0 and dataset.refresh() > 0:
             train_loader = DataLoader(
                 dataset,
                 batch_size=config['batch_size'],
@@ -537,19 +276,7 @@ def train_phase1(
                 num_workers=num_workers,
                 pin_memory=(device == 'cuda')
             )
-
-        # streaming 模式：重新掃描納入新檔案
-        elif loading_mode == 'streaming' and hasattr(dataset, 'rescan') and epoch > 0:
-            added = dataset.rescan()
-            if added > 0:
-                train_loader = DataLoader(
-                    dataset,
-                    batch_size=config['batch_size'],
-                    shuffle=True,
-                    num_workers=num_workers,
-                    pin_memory=(device == 'cuda')
-                )
-                logger.info(f"資料已更新：訓練樣本 {len(dataset)}")
+            logger.info(f"資料已更新：訓練樣本 {len(dataset)}")
 
         # 更新當前 epoch（用於 checkpoint）
         trainer.current_epoch = epoch

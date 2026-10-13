@@ -17,6 +17,11 @@ from typing import Tuple, Optional
 
 import numpy as np
 
+# 添加專案根目錄
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from core.sample_store import write_samples  # noqa: E402
+
 # 設定 logging
 logging.basicConfig(
     level=logging.INFO,
@@ -278,7 +283,7 @@ def convert_single_npz(npz_path: str, output_dir: str) -> Tuple[int, int]:
         output_path = os.path.join(output_dir, output_name)
 
         # 儲存（使用訓練腳本期望的 key 名稱）
-        np.savez_compressed(
+        write_samples(
             output_path,
             inputs=np.array(features_list),         # (N, 2, 19, 19)
             policy_targets=np.array(policies_list), # (N, 362)
