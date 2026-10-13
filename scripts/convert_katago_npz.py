@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """KataGo NPZ 批量轉換腳本
 
-將 KataGo 訓練資料轉換成 LightGo 格式。
+將 KataGo 訓練資料轉換成 LightGo 格式（輪走方視角的 2-plane 特徵，
+由 input.lightgo_encoder.encode_planes 產生，與推論端完全一致）。
+
+KataGo 資料佈局（cpp/neuralnet/nninputs.cpp fillRowV7、cpp/dataio/trainingwrite.h）：
+- binaryInputNCHWPacked plane 0 = on-board、plane 1 = 輪走方棋子、plane 2 = 對手棋子、
+  plane 6 = 輪走方的 ko-ban 點（含 superko）
+- globalTargetsNC[:, 0/1/2] = 輪走方的 win/loss/noresult 機率
 
 使用方式:
     python scripts/convert_katago_npz.py --input data/katago_raw/extracted --output data/lightgo/training_data/katago
@@ -13,14 +19,17 @@ import os
 import sys
 import multiprocessing as mp
 from pathlib import Path
-from typing import Tuple, Optional
+from typing import Tuple
 
 import numpy as np
 
-# 添加專案根目錄
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# 添加專案根目錄（直接以 python scripts/... 執行時需要）
+project_root = Path(__file__).resolve().parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 from core.sample_store import write_samples  # noqa: E402
+from input.lightgo_encoder import encode_planes  # noqa: E402
 
 # 設定 logging
 logging.basicConfig(
@@ -28,6 +37,11 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# KataGo spatial input plane indices（V7）
+KATAGO_PLANE_OWN = 1
+KATAGO_PLANE_OPP = 2
+KATAGO_PLANE_KO_BAN = 6
 
 
 def unpack_katago_binary(packed: np.ndarray, board_size: int = 19) -> np.ndarray:
@@ -49,153 +63,46 @@ def unpack_katago_binary(packed: np.ndarray, board_size: int = 19) -> np.ndarray
     return unpacked.reshape(num_planes, board_size, board_size).astype(np.int8)
 
 
-def compute_liberties_fast(black_stones: np.ndarray, white_stones: np.ndarray) -> np.ndarray:
-    """快速計算帶符號氣數矩陣
-
-    使用 Union-Find 進行連通分量分析（純 numpy 實現）。
+def katago_sample_to_lightgo(
+    packed: np.ndarray,
+    policy_target: np.ndarray,
+    global_target: np.ndarray,
+    board_size: int = 19,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """將單筆 KataGo 樣本轉成 LightGo (features, policy, value)。
 
     Args:
-        black_stones: (19, 19) 黑子位置
-        white_stones: (19, 19) 白子位置
+        packed: (22, packed_size) binaryInputNCHWPacked 的一列
+        policy_target: (2, 362) policyTargetsNCMove 的一列
+        global_target: (64,) globalTargetsNC 的一列
+        board_size: 棋盤大小
 
     Returns:
-        liberties: (19, 19) 帶符號氣數，黑正白負
+        features: (2, N, N) float32，輪走方視角
+        policy: (N*N+1,) float32，總和為 1（pass = 最後一格）
+        value: (1,) float32，輪走方視角 [-1, 1] = P(win) - P(loss)
     """
-    board_size = black_stones.shape[0]
-    liberties = np.zeros((board_size, board_size), dtype=np.float32)
+    planes = unpack_katago_binary(packed, board_size)
+    own = planes[KATAGO_PLANE_OWN].astype(bool)
+    opp = planes[KATAGO_PLANE_OPP].astype(bool)
+    # plane 6 = 輪走方的 ko-ban；實測 3071 筆樣本中 121/128 個點為「空點且四鄰皆對手子」
+    # 的簡單劫型，其餘為 superko 禁點，兩者對輪走方都是禁著。
+    ko_ban = planes[KATAGO_PLANE_KO_BAN].astype(bool)
+    # 注意：禁著點的自殺判定採 LightGo 規則（禁止自殺）。KataGo 部分樣本的規則允許
+    # 多子自殺（globalInputNC[:, 8] = 1），其 policy 可能在這些點上有少量機率
+    #（實測 3071 筆中 19 筆、總質量 ≈ 0.07%）。
+    features = encode_planes(own, opp, ko_ban)
 
-    # 空點遮罩
-    empty = ~(black_stones.astype(bool) | white_stones.astype(bool))
+    num_actions = board_size * board_size + 1
+    policy = policy_target[0, :num_actions].astype(np.float32)
+    policy_sum = policy.sum()
+    if policy_sum > 0:
+        policy = policy / policy_sum
+    else:
+        policy = np.ones(num_actions, dtype=np.float32) / num_actions
 
-    def find_groups_and_liberties(stones: np.ndarray, empty_mask: np.ndarray) -> dict:
-        """找出所有棋串和對應的氣數"""
-        if not stones.any():
-            return {}
-
-        # Union-Find
-        parent = {}
-        rank = {}
-
-        def find(x):
-            if x not in parent:
-                parent[x] = x
-                rank[x] = 0
-            if parent[x] != x:
-                parent[x] = find(parent[x])
-            return parent[x]
-
-        def union(x, y):
-            rx, ry = find(x), find(y)
-            if rx == ry:
-                return
-            if rank[rx] < rank[ry]:
-                rx, ry = ry, rx
-            parent[ry] = rx
-            if rank[rx] == rank[ry]:
-                rank[rx] += 1
-
-        # 找出所有棋子位置
-        stone_positions = np.argwhere(stones)
-
-        # 建立位置集合用於快速查找
-        stone_set = set(map(tuple, stone_positions))
-
-        # Union 相鄰棋子
-        for r, c in stone_positions:
-            pos = (r, c)
-            find(pos)
-            for dr, dc in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
-                nr, nc = r + dr, c + dc
-                if (nr, nc) in stone_set:
-                    union(pos, (nr, nc))
-
-        # 統計每個棋串的氣
-        group_liberties = {}
-        for r, c in stone_positions:
-            root = find((r, c))
-            if root not in group_liberties:
-                group_liberties[root] = set()
-
-            # 檢查四個方向的空點
-            for dr, dc in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
-                nr, nc = r + dr, c + dc
-                if 0 <= nr < board_size and 0 <= nc < board_size:
-                    if empty_mask[nr, nc]:
-                        group_liberties[root].add((nr, nc))
-
-        # 轉換為氣數
-        return {root: len(libs) for root, libs in group_liberties.items()}
-
-    # 處理黑子
-    black_group_libs = find_groups_and_liberties(black_stones, empty)
-
-    # Union-Find for liberty assignment
-    if black_stones.any():
-        parent = {}
-
-        def find(x):
-            if x not in parent:
-                parent[x] = x
-            if parent[x] != x:
-                parent[x] = find(parent[x])
-            return parent[x]
-
-        def union(x, y):
-            rx, ry = find(x), find(y)
-            if rx != ry:
-                parent[ry] = rx
-
-        stone_positions = np.argwhere(black_stones)
-        stone_set = set(map(tuple, stone_positions))
-
-        for r, c in stone_positions:
-            pos = (r, c)
-            find(pos)
-            for dr, dc in [(0, 1), (1, 0)]:
-                nr, nc = r + dr, c + dc
-                if (nr, nc) in stone_set:
-                    union(pos, (nr, nc))
-
-        for r, c in stone_positions:
-            root = find((r, c))
-            libs = black_group_libs.get(root, 0)
-            liberties[r, c] = min(libs, 127)
-
-    # 處理白子
-    white_group_libs = find_groups_and_liberties(white_stones, empty)
-
-    if white_stones.any():
-        parent = {}
-
-        def find(x):
-            if x not in parent:
-                parent[x] = x
-            if parent[x] != x:
-                parent[x] = find(parent[x])
-            return parent[x]
-
-        def union(x, y):
-            rx, ry = find(x), find(y)
-            if rx != ry:
-                parent[ry] = rx
-
-        stone_positions = np.argwhere(white_stones)
-        stone_set = set(map(tuple, stone_positions))
-
-        for r, c in stone_positions:
-            pos = (r, c)
-            find(pos)
-            for dr, dc in [(0, 1), (1, 0)]:
-                nr, nc = r + dr, c + dc
-                if (nr, nc) in stone_set:
-                    union(pos, (nr, nc))
-
-        for r, c in stone_positions:
-            root = find((r, c))
-            libs = white_group_libs.get(root, 0)
-            liberties[r, c] = -min(libs, 127)
-
-    return liberties
+    value = np.array([global_target[0] - global_target[1]], dtype=np.float32)
+    return features, policy, value
 
 
 def convert_single_npz(npz_path: str, output_dir: str) -> Tuple[int, int]:
@@ -217,63 +124,14 @@ def convert_single_npz(npz_path: str, output_dir: str) -> Tuple[int, int]:
 
         num_samples = packed.shape[0]
 
-        # 準備輸出陣列
         features_list = []
         policies_list = []
         values_list = []
 
         for i in range(num_samples):
-            # Unpack binary
-            planes = unpack_katago_binary(packed[i])  # (22, 19, 19)
-
-            # 取出黑白子位置 (KataGo: plane 1 = 當前玩家, plane 2 = 對手)
-            # 但實際上我們需要原始黑白子
-            # KataGo 的 plane 0 是空點，plane 1 是當前玩家棋子，plane 2 是對手棋子
-            # 我們需要知道當前是誰在下
-            # 簡化：假設 global_targets 第一個值是輪次 (0=黑, 1=白)
-
-            # 暫時使用 plane 1, 2 作為黑白子
-            current_player_stones = planes[1].astype(bool)
-            opponent_stones = planes[2].astype(bool)
-
-            # 從 globalInputNC 判斷當前玩家（通常第一個值）
-            # KataGo 格式中 global 輸入第 0 個通道是 "is white to play"
-            is_white_to_play = data['globalInputNC'][i, 0] > 0.5
-
-            if is_white_to_play:
-                white_stones = current_player_stones
-                black_stones = opponent_stones
-            else:
-                black_stones = current_player_stones
-                white_stones = opponent_stones
-
-            # 計算帶符號氣數
-            signed_liberties = compute_liberties_fast(
-                black_stones.astype(np.int8),
-                white_stones.astype(np.int8)
+            features, policy, value = katago_sample_to_lightgo(
+                packed[i], policy_targets[i], global_targets[i]
             )
-
-            # 禁止點 = 已佔位置（自殺點和劫需要更複雜的計算，暫時省略）
-            forbidden = (black_stones | white_stones).astype(np.float32)
-
-            # 組合成 2-plane 特徵
-            features = np.stack([
-                signed_liberties / 127.0,  # 歸一化到 [-1, 1]
-                forbidden
-            ], axis=0).astype(np.float32)  # (2, 19, 19)
-
-            # Policy target (取第一個 head, 包含 pass=index 361)
-            policy = policy_targets[i, 0, :362].astype(np.float32)
-            policy_sum = policy.sum()
-            if policy_sum > 0:
-                policy = policy / policy_sum  # 歸一化
-            else:
-                policy = np.ones(362, dtype=np.float32) / 362  # 均勻分佈
-
-            # Value target (從 global targets 提取勝率)
-            # KataGo globalTargetsNC 格式：index 0 是 result (-1 到 1)
-            value = np.array([global_targets[i, 0]], dtype=np.float32)
-
             features_list.append(features)
             policies_list.append(policy)
             values_list.append(value)

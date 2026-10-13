@@ -42,6 +42,7 @@ from core.muzero.replay_buffer import MuZeroReplayBuffer, Trajectory
 from core.game_rules import GoBoard
 from core.gumbel_mcts import GumbelMCTS
 from core.sample_store import open_sample_dataset
+from input.lightgo_encoder import encode_board
 
 logging.basicConfig(
     level=logging.INFO,
@@ -326,30 +327,6 @@ def train_phase1(
 
 # ========== Phase 2: MuZero 自我對弈 ==========
 
-def encode_board(board: GoBoard) -> np.ndarray:
-    """將棋盤編碼為 2-plane 特徵
-
-    Plane 0: 己方棋子的氣數（正值）/ 對方棋子的氣數（負值）
-    Plane 1: 禁著點（1 = 不可落子）
-    """
-    size = board.size
-    features = np.zeros((2, size, size), dtype=np.float32)
-
-    # 計算各點的氣數
-    for i in range(size):
-        for j in range(size):
-            stone = board.get(i, j)  # 'b', 'w', or None
-            if stone is not None:  # 有棋子
-                group = board.get_group(i, j)
-                liberties = board.count_liberties(group)
-                # 黑棋正值，白棋負值
-                features[0, i, j] = liberties if stone == 'b' else -liberties
-                # 標記已佔用的點
-                features[1, i, j] = 1.0
-
-    return features
-
-
 def save_game_to_sgf(trajectory: Trajectory, board_size: int, result: float, filepath: str) -> None:
     """儲存棋局為 SGF 檔案"""
     from sgfmill import sgf
@@ -412,8 +389,8 @@ def play_gumbel_game(
     consecutive_passes = 0
 
     for move_num in range(max_moves):
-        # 編碼當前盤面
-        obs = encode_board(board)
+        # 編碼當前盤面（輪走方視角，與推論端同一編碼）
+        obs = encode_board(board, current_player)
 
         # 決定溫度
         temperature = 1.0 if move_num < temperature_threshold else 0.0

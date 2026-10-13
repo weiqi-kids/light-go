@@ -470,7 +470,7 @@ class MCTSOptimized:
         """轉換棋盤為特徵（使用 LightGo 2-plane 編碼）
 
         LightGo 2-plane encoding:
-        - Plane 0: Signed liberties (black=+, white=-)
+        - Plane 0: Signed liberties (side to move=+, opponent=-)
         - Plane 1: Forbidden points (occupied, suicide, ko)
         """
         # 動態創建 encoder 以支持不同棋盤大小

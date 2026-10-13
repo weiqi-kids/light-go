@@ -1,21 +1,179 @@
 #!/usr/bin/env python3
-"""LightGo 2-Plane 輸入編碼器
+"""LightGo 2-Plane 輸入編碼器（唯一的盤面編碼實作）
 
-將棋盤狀態編碼為 2 個平面：
-- Plane 0: Signed Liberties (帶符號的氣數)
-- Plane 1: Forbidden Points (非法著手點)
+以「輪走方（side to move）視角」將盤面編碼為 2 個平面：
+- Plane 0: Signed Liberties —— 輪走方棋子 +氣數、對手棋子 −氣數、空點 0，
+  上限 127，再 ÷127 → [-1, 1]
+- Plane 1: Forbidden Points —— 輪走方不可落子的點：已佔據點 + 自殺點 + 劫禁點
+
+所有入口（MCTS 推論、KataGo 資料轉換、Phase 2 自我對弈紀錄）都必須經過
+:func:`encode_planes`，確保訓練與推論看到的特徵一致。
+
+實作為純 numpy 向量化（連通分量用最小標籤傳播 + pointer jumping），
+適合批量轉換數百萬筆 KataGo 樣本。
 """
+from __future__ import annotations
+
+from typing import List, Optional, Tuple, Union
 
 import numpy as np
 import torch
-from typing import List, Tuple, Set
+
 from core.game_rules import GoBoard
+
+#: 氣數上限（Int8 範圍），同時是 Plane 0 的歸一化分母
+MAX_LIBERTIES = 127
+
+KoSpec = Union[None, Tuple[int, int], np.ndarray]
+
+
+def _shift(arr: np.ndarray, dr: int, dc: int, fill) -> np.ndarray:
+    """回傳 out[r, c] = arr[r + dr, c + dc]，超出棋盤處填 ``fill``。"""
+    n_rows, n_cols = arr.shape
+    out = np.full_like(arr, fill)
+    rs_dst = slice(max(0, -dr), n_rows - max(0, dr))
+    cs_dst = slice(max(0, -dc), n_cols - max(0, dc))
+    rs_src = slice(max(0, dr), n_rows - max(0, -dr))
+    cs_src = slice(max(0, dc), n_cols - max(0, -dc))
+    out[rs_dst, cs_dst] = arr[rs_src, cs_src]
+    return out
+
+
+_DIRS = ((-1, 0), (1, 0), (0, -1), (0, 1))
+
+
+def group_liberties(stones_a: np.ndarray, stones_b: np.ndarray) -> np.ndarray:
+    """計算每個棋子所屬棋串的氣數（未截斷、無符號）。
+
+    Args:
+        stones_a: (N, N) bool，一方棋子位置（顏色可互換，只需兩方不同）
+        stones_b: (N, N) bool，另一方棋子位置
+
+    Returns:
+        (N, N) int64：棋子位置為其棋串的氣數，空點為 0
+    """
+    size = stones_a.shape[0]
+    total = size * size
+    color = stones_a.astype(np.int8) + 2 * stones_b.astype(np.int8)  # 0 空, 1 a, 2 b
+    stones = color > 0
+    if not stones.any():
+        return np.zeros((size, size), dtype=np.int64)
+
+    # 同色相鄰遮罩（每個方向一個）
+    same = [(_shift(color, dr, dc, 0) == color) & stones for dr, dc in _DIRS]
+
+    # 連通分量：最小標籤傳播 + pointer jumping
+    sentinel = total
+    labels = np.where(stones, np.arange(total).reshape(size, size), sentinel)
+    while True:
+        new = labels
+        for (dr, dc), mask in zip(_DIRS, same):
+            new = np.where(mask, np.minimum(new, _shift(labels, dr, dc, sentinel)), new)
+        flat = np.append(new.ravel(), sentinel)
+        new = flat[new]  # pointer jumping：標籤一定指向同棋串的棋子
+        if np.array_equal(new, labels):
+            break
+        labels = new
+
+    # 每個空點對每個相鄰棋串只算一口氣
+    empty = ~stones
+    nb_labels = [np.where(empty, _shift(labels, dr, dc, sentinel), sentinel) for dr, dc in _DIRS]
+    counted = []
+    for i, lab in enumerate(nb_labels):
+        keep = lab != sentinel
+        for prev in nb_labels[:i]:
+            keep &= lab != prev
+        counted.append(lab[keep])
+    lib_count = np.bincount(np.concatenate(counted), minlength=total + 1)
+    lib_count[sentinel] = 0
+    return lib_count[labels]
+
+
+def encode_planes(
+    own: np.ndarray,
+    opp: np.ndarray,
+    ko_point: KoSpec = None,
+) -> np.ndarray:
+    """將盤面以「輪走方視角」編碼為 LightGo 2-plane 特徵。
+
+    Args:
+        own: (N, N) 輪到落子那一方（side to move）的棋子（bool 或 0/1）
+        opp: (N, N) 對手的棋子（bool 或 0/1）
+        ko_point: 輪走方的劫禁點 ``(row, col)``；或 (N, N) bool 遮罩
+            （例如 KataGo plane 6 ko-ban，可能含多點）；無則 None
+
+    Returns:
+        (2, N, N) float32：
+            [0] 帶符號氣數 ÷127（輪走方棋子 +、對手棋子 −）
+            [1] 輪走方的禁著點（佔據 + 自殺 + 劫）
+    """
+    own = np.asarray(own).astype(bool)
+    opp = np.asarray(opp).astype(bool)
+    if own.shape != opp.shape or own.ndim != 2 or own.shape[0] != own.shape[1]:
+        raise ValueError(f"own/opp 必須是相同的 (N, N)，收到 {own.shape} / {opp.shape}")
+    if (own & opp).any():
+        raise ValueError("同一點不能同時有雙方棋子")
+
+    libs = group_liberties(own, opp)
+    occupied = own | opp
+    empty = ~occupied
+
+    planes = np.zeros((2,) + own.shape, dtype=np.float32)
+    clipped = np.minimum(libs, MAX_LIBERTIES).astype(np.float32)
+    planes[0] = (np.where(own, clipped, 0.0) - np.where(opp, clipped, 0.0)) / float(MAX_LIBERTIES)
+
+    # 自殺點：無空鄰點、無可延氣的己方棋串（氣 > 1）、無可提的對方棋串（氣 == 1）
+    has_escape = np.zeros_like(empty)
+    for dr, dc in _DIRS:
+        nb_empty = _shift(empty, dr, dc, False)
+        nb_own = _shift(own, dr, dc, False)
+        nb_opp = _shift(opp, dr, dc, False)
+        nb_libs = _shift(libs, dr, dc, 0)
+        has_escape |= nb_empty | (nb_own & (nb_libs > 1)) | (nb_opp & (nb_libs == 1))
+    suicide = empty & ~has_escape
+
+    forbidden = occupied | suicide
+    if ko_point is not None:
+        if isinstance(ko_point, np.ndarray):
+            forbidden |= ko_point.astype(bool)
+        else:
+            forbidden[ko_point[0], ko_point[1]] = True
+    planes[1] = forbidden
+    return planes
+
+
+def board_to_arrays(board: GoBoard) -> Tuple[np.ndarray, np.ndarray]:
+    """從 GoBoard 取出 (black, white) bool 陣列。"""
+    size = board.size
+    black = np.zeros((size, size), dtype=bool)
+    white = np.zeros((size, size), dtype=bool)
+    for row in range(size):
+        for col in range(size):
+            stone = board.get(row, col)
+            if stone == 'b':
+                black[row, col] = True
+            elif stone == 'w':
+                white[row, col] = True
+    return black, white
+
+
+def encode_board(board: GoBoard, color: str) -> np.ndarray:
+    """GoBoard 便利介面：以 ``color``（輪走方）視角編碼，含 board.ko_point。
+
+    Returns:
+        (2, N, N) float32 numpy 特徵，語意同 :func:`encode_planes`
+    """
+    if color not in ('b', 'w'):
+        raise ValueError(f"color 必須是 'b' 或 'w'，收到 {color!r}")
+    black, white = board_to_arrays(board)
+    own, opp = (black, white) if color == 'b' else (white, black)
+    return encode_planes(own, opp, getattr(board, 'ko_point', None))
 
 
 class LightGoEncoder:
-    """LightGo 2-Plane 編碼器
+    """LightGo 2-Plane 編碼器（MCTS / 自我對弈使用的 torch 介面）。
 
-    使用 BFS 計算每個棋串的氣數，對於圍棋的稀疏棋盤效率較高（~14ms/board）。
+    薄包裝：實際編碼委派給 :func:`encode_planes`。
     """
 
     def __init__(self, board_size: int = 19):
@@ -32,188 +190,16 @@ class LightGoEncoder:
 
         Args:
             board: GoBoard 物件
-            current_player: 'b' or 'w'
-            normalize: 是否歸一化到 [-1, 1] 範圍（建議開啟）
+            current_player: 'b' or 'w'（輪走方；Plane 0 以其棋子為正）
+            normalize: Plane 0 是否 ÷127（預設 True；False 回傳原始氣數）
 
         Returns:
             tensor: (2, board_size, board_size)
-                Plane 0: Signed liberties (歸一化後 [-1, 1])
-                Plane 1: Forbidden points (Binary [0, 1])
         """
-        planes = np.zeros((2, self.board_size, self.board_size), dtype=np.float32)
-
-        # Plane 0: Signed Liberties（使用 BFS，對稀疏棋盤效率高）
-        self._encode_signed_liberties(board, planes[0])
-
-        # Plane 1: Forbidden Points
-        self._encode_forbidden_points(board, current_player, planes[1])
-
-        # 歸一化 Plane 0 到 [-1, 1] 範圍
-        if normalize:
-            planes[0] = planes[0] / 127.0  # -127~+127 → -1~+1
-
+        planes = encode_board(board, current_player)
+        if not normalize:
+            planes[0] = np.rint(planes[0] * MAX_LIBERTIES)
         return torch.from_numpy(planes)
-
-    def _encode_signed_liberties(self, board: GoBoard, plane: np.ndarray):
-        """編碼 Plane 0: 帶符號的氣數
-
-        - 黑子：正值（+氣數）
-        - 白子：負值（-氣數）
-        - 空點：0
-
-        氣數範圍限制在 Int8: [-127, +127]
-
-        優化：使用 group cache 避免重複計算同一棋串的氣數
-        """
-        visited = set()  # 已處理過的位置
-
-        for row in range(self.board_size):
-            for col in range(self.board_size):
-                if (row, col) in visited:
-                    continue
-
-                stone = board.get(row, col)
-
-                if stone is None:  # 空點
-                    plane[row, col] = 0
-                else:
-                    # 計算整個棋串的氣數，並獲取棋串所有成員
-                    group, liberties_count = self._count_group_liberties_with_members(
-                        board, row, col
-                    )
-                    # 限制在 Int8 範圍
-                    liberties_count = min(liberties_count, 127)
-
-                    # 設定棋串所有成員的值（避免重複計算）
-                    sign = 1 if stone == 'b' else -1
-                    for r, c in group:
-                        plane[r, c] = sign * liberties_count
-                        visited.add((r, c))
-
-    def _count_group_liberties(self, board: GoBoard, row: int, col: int) -> int:
-        """計算棋串的氣數"""
-        _, liberties_count = self._count_group_liberties_with_members(board, row, col)
-        return liberties_count
-
-    def _count_group_liberties_with_members(
-        self, board: GoBoard, row: int, col: int
-    ) -> Tuple[Set[Tuple[int, int]], int]:
-        """計算棋串的氣數並返回棋串成員
-
-        Returns:
-            (group, liberties_count): 棋串成員集合與氣數
-        """
-        stone_color = board.get(row, col)
-        if stone_color is None:
-            return set(), 0
-
-        # BFS 找到整個棋串
-        group = set()
-        liberties = set()
-        stack = [(row, col)]
-        visited = set()
-
-        while stack:
-            r, c = stack.pop()
-            if (r, c) in visited:
-                continue
-            visited.add((r, c))
-
-            if not (0 <= r < self.board_size and 0 <= c < self.board_size):
-                continue
-
-            current = board.get(r, c)
-
-            if current == stone_color:
-                group.add((r, c))
-                # 檢查四個方向
-                for dr, dc in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
-                    nr, nc = r + dr, c + dc
-                    if (nr, nc) not in visited:
-                        stack.append((nr, nc))
-            elif current is None:
-                liberties.add((r, c))
-
-        return group, len(liberties)
-
-    def _encode_forbidden_points(self, board: GoBoard, current_player: str, plane: np.ndarray):
-        """編碼 Plane 1: 非法著手點
-
-        包含：
-        1. 所有黑子位置
-        2. 所有白子位置
-        3. 自殺點（落子後立刻被提）
-        4. 打劫點（如果存在）
-        """
-        # 1. 所有占據的點
-        for row in range(self.board_size):
-            for col in range(self.board_size):
-                if board.get(row, col) is not None:
-                    plane[row, col] = 1
-
-        # 2. 自殺點
-        suicide_points = self._find_suicide_points(board, current_player)
-        for row, col in suicide_points:
-            plane[row, col] = 1
-
-        # 3. 打劫點
-        if hasattr(board, 'ko_point') and board.ko_point is not None:
-            ko_row, ko_col = board.ko_point
-            plane[ko_row, ko_col] = 1
-
-    def _find_suicide_points(self, board: GoBoard, player: str) -> Set[Tuple[int, int]]:
-        """找出所有自殺點
-
-        自殺點：落子後該棋串立刻無氣，且不能提掉對方棋子
-        """
-        suicide_points = set()
-
-        for row in range(self.board_size):
-            for col in range(self.board_size):
-                if board.get(row, col) is not None:
-                    continue
-
-                # 嘗試落子
-                if self._is_suicide(board, row, col, player):
-                    suicide_points.add((row, col))
-
-        return suicide_points
-
-    def _is_suicide(self, board: GoBoard, row: int, col: int, player: str) -> bool:
-        """檢查落子是否為自殺
-
-        自殺條件：
-        1. 落子後該棋串無氣
-        2. 且沒有提掉對方棋子
-        """
-        # 使用 GoBoard 的 is_legal 方法更準確
-        # 但如果沒有，我們簡化檢查
-        # 檢查是否能提掉對方棋子
-        opponent = 'w' if player == 'b' else 'b'
-
-        # 檢查四個方向是否能提子
-        for dr, dc in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
-            nr, nc = row + dr, col + dc
-            if (0 <= nr < self.board_size and 0 <= nc < self.board_size
-                    and board.get(nr, nc) == opponent):
-                # 如果相鄰對方棋子只有一氣（當前空點），落子會提掉它
-                if self._count_group_liberties(board, nr, nc) == 1:
-                    return False  # 不是自殺，因為能提子
-
-        # 檢查落子後自己是否有氣
-        # 簡化：檢查四個方向是否有空點或友軍有氣
-        for dr, dc in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
-            nr, nc = row + dr, col + dc
-            if 0 <= nr < self.board_size and 0 <= nc < self.board_size:
-                stone = board.get(nr, nc)
-                if stone is None:
-                    return False  # 有氣
-                elif stone == player:
-                    if self._count_group_liberties(board, nr, nc) > 1:
-                        return False  # 友軍有多餘氣
-
-        # 沒有氣且不能提子 = 自殺
-        return True
 
     def batch_encode(self, boards: List[GoBoard], players: List[str]) -> torch.Tensor:
         """批次編碼
@@ -225,106 +211,15 @@ class LightGoEncoder:
         Returns:
             tensor: (batch_size, 2, board_size, board_size)
         """
-        batch = []
-        for board, player in zip(boards, players):
-            encoded = self.encode(board, player)
-            batch.append(encoded)
-        return torch.stack(batch)
-
-
-def unpack_katago_binary(packed: np.ndarray, board_size: int = 19) -> np.ndarray:
-    """Unpack KataGo packed binary format to full planes.
-
-    KataGo stores board data as packed bits: (num_planes, ceil(board_size^2 / 8))
-    This function unpacks to: (num_planes, board_size, board_size)
-
-    Args:
-        packed: (num_planes, packed_size) uint8 array
-        board_size: size of the board (default 19)
-
-    Returns:
-        unpacked: (num_planes, board_size, board_size) float32 array
-    """
-    num_planes = packed.shape[0]
-    total_points = board_size * board_size
-
-    # Unpack bits
-    unpacked = np.unpackbits(packed, axis=1)[:, :total_points]
-
-    # Reshape to (num_planes, board_size, board_size)
-    return unpacked.reshape(num_planes, board_size, board_size).astype(np.float32)
-
-
-def convert_katago_to_lightgo(katago_planes: np.ndarray, board_size: int = 19) -> torch.Tensor:
-    """從 KataGo 22-plane 轉換為 LightGo 2-plane
-
-    KataGo format:
-        Plane 0-1: Current black/white stones
-        Plane 2-17: History (8 moves × 2 colors)
-        Plane 18-21: Ladder features, Ko, etc.
-
-    LightGo format:
-        Plane 0: Signed liberties
-        Plane 1: Forbidden points
-
-    Args:
-        katago_planes: (22, 19, 19) or (22, packed_size) numpy array
-                       If packed_size != 19*19, will unpack first
-
-    Returns:
-        tensor: (2, 19, 19)
-    """
-    # 如果是 packed 格式，先 unpack
-    if katago_planes.ndim == 2 or katago_planes.shape[-1] != board_size:
-        katago_planes = unpack_katago_binary(katago_planes, board_size)
-
-    # 從 KataGo 重建棋盤狀態
-    board = GoBoard(size=board_size)
-
-    # KataGo Plane 0 = 黑子, Plane 1 = 白子
-    black_stones = katago_planes[0]
-    white_stones = katago_planes[1]
-
-    # 使用 apply_setup 批量設置棋盤（避免逐個 play_move 的副作用）
-    black_points = []
-    white_points = []
-
-    for row in range(board_size):
-        for col in range(board_size):
-            if black_stones[row, col] > 0.5:
-                black_points.append((row, col))
-            elif white_stones[row, col] > 0.5:
-                white_points.append((row, col))
-
-    # 使用 sgfmill 的 apply_setup 設置棋盤
-    board.board.apply_setup(black_points, white_points, [])
-
-    # 檢測當前玩家（從 history 推斷，或使用額外信息）
-    # 簡化：假設黑先
-    current_player = 'b'
-
-    # 使用 LightGo encoder
-    encoder = LightGoEncoder(board_size=board_size)
-    return encoder.encode(board, current_player)
+        return torch.stack([self.encode(board, player) for board, player in zip(boards, players)])
 
 
 if __name__ == '__main__':
-    # 測試編碼器
-    board = GoBoard(size=19)
-
-    # 放置一些棋子進行測試
-    board.play_move(3, 3, 'b')  # D4
-    board.play_move(3, 4, 'w')  # D5
-    board.play_move(4, 3, 'b')  # E4
-
-    encoder = LightGoEncoder(board_size=19)
-    encoded = encoder.encode(board, current_player='b')
-
-    print("LightGo 2-Plane Encoding Test")
-    print("=" * 60)
+    demo = GoBoard(size=19)
+    demo.play_move(3, 3, 'b')
+    demo.play_move(3, 4, 'w')
+    demo.play_move(4, 3, 'b')
+    encoded = LightGoEncoder(board_size=19).encode(demo, current_player='b')
     print(f"Encoded shape: {encoded.shape}")
-    print(f"\nPlane 0 (Signed Liberties) - Center region:")
-    print(encoded[0, 2:6, 2:6])
-    print(f"\nPlane 1 (Forbidden Points) - Center region:")
+    print(encoded[0, 2:6, 2:6] * MAX_LIBERTIES)
     print(encoded[1, 2:6, 2:6])
-    print("\n✅ Encoding test complete!")

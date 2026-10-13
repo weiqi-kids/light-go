@@ -501,7 +501,7 @@ class MCTS:
         Notes
         -----
         LightGo 2-plane encoding:
-        - Plane 0: Signed liberties (black=+, white=-)
+        - Plane 0: Signed liberties (side to move=+, opponent=-)
         - Plane 1: Forbidden points (occupied, suicide, ko)
         """
         # Create encoder with correct board size if needed
