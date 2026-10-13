@@ -8,6 +8,7 @@
 2. [命名規則](#命名規則)
 3. [檔案結構](#檔案結構)
 4. [程式碼風格](#程式碼風格)
+5. [MuZero 訓練除錯經驗](#muzero-訓練除錯經驗)
 
 ---
 
@@ -281,3 +282,95 @@ class TestGTPIntegration:
 - [ ] Import 順序正確
 - [ ] 沒有手動操作 `sys.path`
 - [ ] 測試函數有 docstring
+
+---
+
+## MuZero 訓練除錯經驗
+
+### 訓練接續問題（2025-02-19）
+
+**問題**：執行 `python scripts/train_muzero.py --phase 1 --epochs 10` 時，Loss 全是 NaN。
+
+**原因分析**：
+1. 原腳本需要手動指定 `--resume` 才會載入 checkpoint
+2. 不指定時會從頭訓練（隨機初始化網路）
+3. 某些批次資料可能導致數值不穩定
+
+**解決方案**：
+
+1. **自動偵測 checkpoint**（`train_muzero.py`）
+   ```python
+   # 自動偵測現有 checkpoint（除非指定 --from-scratch）
+   if not args.from_scratch and checkpoint_path is None:
+       auto_ckpt = output_dir / "phase1_best.pt"
+       if auto_ckpt.exists():
+           checkpoint_path = str(auto_ckpt)
+           logger.info(f"自動偵測到 checkpoint: {checkpoint_path}")
+   ```
+
+2. **NaN 偵測與跳過**（`trainer.py`）
+   ```python
+   # 檢查輸入資料是否有 NaN
+   if torch.isnan(features).any() or torch.isnan(target_policies).any():
+       logger.warning("輸入資料包含 NaN，跳過此批次")
+       return {'total_loss': 0.0, 'skipped': True}
+
+   # 檢查 loss 是否為 NaN
+   if torch.isnan(total_loss) or torch.isinf(total_loss):
+       logger.warning("Loss 為 NaN/Inf，跳過此批次")
+       return {'total_loss': 0.0, 'skipped': True}
+   ```
+
+**使用方式**：
+```bash
+# 接續訓練（自動偵測 checkpoint）
+python scripts/train_muzero.py --phase 1 --epochs 10
+
+# 從頭訓練（忽略現有 checkpoint）
+python scripts/train_muzero.py --phase 1 --epochs 10 --from-scratch
+```
+
+**重要教訓**：
+- Checkpoint 自動偵測應該是預設行為，避免意外覆蓋訓練進度
+- NaN 問題應該跳過而非中斷整個訓練
+- 最佳模型只在 loss 改善時才覆蓋，NaN 不會覆蓋原檔案
+
+### Checkpoint 檔案位置
+
+| Phase | 檔案 | 說明 |
+|-------|------|------|
+| Phase 1 | `data/models/muzero/phase1_best.pt` | 監督預訓練最佳模型 |
+| Phase 1 | `data/models/muzero/phase1_final.pt` | 監督預訓練最終模型 |
+| Phase 2 | `data/models/muzero/phase2_best.pt` | 自我對弈最佳模型 |
+| Phase 2 | `data/models/muzero/phase2_final.pt` | 自我對弈最終模型 |
+
+### Checkpoint 內容檢查
+
+```python
+import torch
+ckpt = torch.load('data/models/muzero/phase1_best.pt', map_location='cpu', weights_only=False)
+print(f"Epoch: {ckpt.get('epoch')}")
+print(f"Global step: {ckpt.get('global_step')}")
+print(f"Keys: {list(ckpt.keys())}")
+
+# 檢查權重是否正常（無 NaN/Inf）
+for name, param in ckpt['networks_state'].items():
+    if torch.isnan(param).any() or torch.isinf(param).any():
+        print(f"問題權重: {name}")
+```
+
+---
+
+## Agent skills
+
+### Issue tracker
+
+Issue 記錄在 GitHub Issues（weiqi-kids/light-go），用 `gh` CLI 操作。See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+沿用預設五個標籤：`needs-triage`、`needs-info`、`ready-for-agent`、`ready-for-human`、`wontfix`。See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context：repo 根目錄一份 `CONTEXT.md` + `docs/adr/`。See `docs/agents/domain.md`.

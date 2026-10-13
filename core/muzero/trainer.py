@@ -515,13 +515,18 @@ class MuZeroTrainer:
         Returns
         -------
         Dict[str, float]
-            損失字典
+            損失字典，包含 'skipped' 鍵表示是否跳過（NaN 偵測）
         """
         self.networks.train()
 
         features = features.to(self.device)
         target_policies = target_policies.to(self.device)
         target_values = target_values.to(self.device)
+
+        # 檢查輸入資料是否有 NaN
+        if torch.isnan(features).any() or torch.isnan(target_policies).any() or torch.isnan(target_values).any():
+            logger.warning("輸入資料包含 NaN，跳過此批次")
+            return {'total_loss': 0.0, 'policy_loss': 0.0, 'value_loss': 0.0, 'skipped': True}
 
         # 決定 autocast dtype
         if self.mixed_precision:
@@ -552,6 +557,11 @@ class MuZeroTrainer:
             value_loss = self._value_loss(value.squeeze(-1), target_values)
             total_loss = policy_loss + self.value_loss_weight * value_loss
 
+        # 檢查 loss 是否為 NaN
+        if torch.isnan(total_loss) or torch.isinf(total_loss):
+            logger.warning(f"Loss 為 NaN/Inf (policy={policy_loss.item():.4f}, value={value_loss.item():.4f})，跳過此批次")
+            return {'total_loss': 0.0, 'policy_loss': 0.0, 'value_loss': 0.0, 'skipped': True}
+
         # 縮放損失用於 gradient accumulation
         scaled_loss = total_loss / self.gradient_accumulation_steps
 
@@ -564,7 +574,8 @@ class MuZeroTrainer:
         return {
             'total_loss': total_loss.item(),
             'policy_loss': policy_loss.item(),
-            'value_loss': value_loss.item()
+            'value_loss': value_loss.item(),
+            'skipped': False
         }
 
     def supervised_optimizer_step(self) -> None:
@@ -620,6 +631,7 @@ class MuZeroTrainer:
         total_losses = []
         policy_losses = []
         value_losses = []
+        skipped_count = 0
 
         accumulation_counter = 0
 
@@ -629,6 +641,11 @@ class MuZeroTrainer:
             values = batch['value']
 
             losses = self.supervised_train_step(features, policies, values)
+
+            # 檢查是否跳過了此批次
+            if losses.get('skipped', False):
+                skipped_count += 1
+                continue
 
             total_losses.append(losses['total_loss'])
             policy_losses.append(losses['policy_loss'])
@@ -643,15 +660,26 @@ class MuZeroTrainer:
 
             # 進度日誌
             if (batch_idx + 1) % 100 == 0:
-                avg_loss = np.mean(total_losses[-100:])
+                recent_losses = total_losses[-100:] if total_losses else [0.0]
+                avg_loss = np.mean(recent_losses)
+                skip_info = f", skipped: {skipped_count}" if skipped_count > 0 else ""
                 logger.info(
                     f"Epoch {epoch}, Batch {batch_idx + 1}/{len(dataloader)}, "
-                    f"Loss: {avg_loss:.4f}"
+                    f"Loss: {avg_loss:.4f}{skip_info}"
                 )
 
         # 處理剩餘梯度
         if accumulation_counter > 0:
             self.supervised_optimizer_step()
+
+        # 記錄跳過的批次數
+        if skipped_count > 0:
+            logger.warning(f"Epoch {epoch} 共跳過 {skipped_count} 個批次（NaN/Inf）")
+
+        # 防止空列表
+        if not total_losses:
+            logger.error("所有批次都被跳過！訓練資料可能有嚴重問題")
+            return {'total_loss': float('nan'), 'policy_loss': float('nan'), 'value_loss': float('nan')}
 
         return {
             'total_loss': np.mean(total_losses),

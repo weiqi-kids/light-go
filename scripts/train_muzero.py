@@ -393,11 +393,15 @@ class BatchLoadingDataset(Dataset):
 # ========== 工具函數 ==========
 
 def get_device() -> str:
-    """自動選擇最佳運算裝置"""
+    """自動選擇最佳運算裝置
+
+    注意：MPS (Metal) 在 AMD GPU 上不穩定，預設只啟用 CUDA。
+    如需使用 MPS，請明確指定 --device mps。
+    """
     if torch.cuda.is_available():
         return 'cuda'
-    elif torch.backends.mps.is_available():
-        return 'mps'
+    # MPS 在 AMD GPU 上容易出錯，預設不自動啟用
+    # 如需使用，請用 --device mps 明確指定
     return 'cpu'
 
 
@@ -896,7 +900,9 @@ def main():
     parser.add_argument('--phase', type=int, default=0,
                        help='訓練階段 (0=全部, 1=僅Phase1, 2=僅Phase2)')
     parser.add_argument('--resume', type=str, default=None,
-                       help='恢復訓練的檢查點路徑')
+                       help='恢復訓練的檢查點路徑（預設自動偵測）')
+    parser.add_argument('--from-scratch', action='store_true',
+                       help='強制從頭訓練，忽略現有 checkpoint')
 
     # 資料路徑
     parser.add_argument('--data-dir', type=str,
@@ -915,6 +921,9 @@ def main():
                        help='批次大小')
     parser.add_argument('--learning-rate', type=float, default=None,
                        help='學習率')
+    parser.add_argument('--device', type=str, default=None,
+                       choices=['cpu', 'cuda', 'mps'],
+                       help='訓練設備 (預設自動偵測，MPS 不穩定時建議用 cpu)')
 
     args = parser.parse_args()
 
@@ -933,7 +942,11 @@ def main():
         config['learning_rate'] = args.learning_rate
 
     # 選擇設備
-    device = get_device()
+    if args.device:
+        device = args.device
+        logger.info(f"使用指定設備: {device}")
+    else:
+        device = get_device()
 
     logger.info("=" * 60)
     logger.info("MuZero 訓練開始")
@@ -946,6 +959,23 @@ def main():
     # 執行訓練
     networks = None
     checkpoint_path = args.resume
+
+    # 自動偵測現有 checkpoint（除非指定 --from-scratch）
+    if not args.from_scratch and checkpoint_path is None:
+        output_dir = Path(config['output_dir'])
+        if args.phase in (0, 1):
+            auto_ckpt = output_dir / "phase1_best.pt"
+        else:
+            auto_ckpt = output_dir / "phase2_best.pt"
+
+        if auto_ckpt.exists():
+            checkpoint_path = str(auto_ckpt)
+            logger.info(f"自動偵測到 checkpoint: {checkpoint_path}")
+            # 顯示 checkpoint 資訊
+            ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+            logger.info(f"  - Epoch: {ckpt.get('epoch', 'N/A')}")
+            logger.info(f"  - Global step: {ckpt.get('global_step', 'N/A')}")
+            logger.info("  （如要從頭訓練，請加 --from-scratch）")
 
     if args.phase == 0 or args.phase == 1:
         # Phase 1: 監督預訓練
