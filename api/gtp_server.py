@@ -40,7 +40,7 @@ sys.path.insert(0, str(project_root))
 from hf_models.modeling_go_ai import GoAIModel
 from core.architecture_genome import ArchitectureGenome
 from core.game_rules import GoBoard
-from core.mcts_optimized import MCTSOptimized
+from core.search import create_search
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,8 @@ class GTPEngine:
         self,
         model: GoAIModel,
         mcts_simulations: int = 200,
-        use_optimized: bool = True
+        use_optimized: bool = True,
+        search_kind: str = 'puct',
     ):
         """初始化 GTP 引擎
 
@@ -63,7 +64,9 @@ class GTPEngine:
         mcts_simulations : int
             MCTS 模擬次數
         use_optimized : bool
-            是否使用優化版 MCTS
+            PUCT 是否用批次葉節點評估（batch_size=4）＋評估快取
+        search_kind : str
+            搜尋種類：'puct' 或 'gumbel'（見 core.search.create_search）
         """
         self.model = model
         self.board_size = 19
@@ -71,12 +74,11 @@ class GTPEngine:
         self.board: Optional[GoBoard] = None
         self.mcts_simulations = mcts_simulations
 
-        # 創建 MCTS
-        self.mcts = MCTSOptimized(
-            model=model,
-            num_simulations=mcts_simulations,
-            batch_size=4
-        )
+        # 創建搜尋（樹重用：每次 search 會驗證盤面，對手落子後也能沿用子樹）
+        search_config = {'num_simulations': mcts_simulations, 'reuse_tree': True}
+        if search_kind == 'puct' and use_optimized:
+            search_config.update(batch_size=4, eval_cache_size=100000)
+        self.mcts = create_search(search_kind, model=model, **search_config)
 
         self.clear_board()
 
@@ -233,7 +235,7 @@ class GTPEngine:
             self.board.pass_move(color)
         else:
             row, col = coords
-            if not self.board.is_legal_move(row, col, color):
+            if not self.board.is_legal(row, col, color):
                 raise ValueError(f"illegal move: {args[1]}")
 
             self.board.play_move(row, col, color)
@@ -253,35 +255,14 @@ class GTPEngine:
         color = 'b' if color in ['b', 'black'] else 'w'
 
         try:
-            # 使用 MCTS 搜索
-            move_probs, root = self.mcts.search(self.board, color)
+            move = self.mcts.select_move(self.board, color, temperature=0)
 
-            # 選擇概率最高的合法著法
-            legal_moves = []
-            for move, prob in move_probs.items():
-                if move == 'pass':
-                    legal_moves.append(('pass', prob))
-                else:
-                    row, col = move
-                    if self.board.is_legal_move(row, col, color):
-                        legal_moves.append(((row, col), prob))
-
-            if not legal_moves:
-                # 無合法著法，pass
+            if move is None or not self.board.is_legal(move[0], move[1], color):
                 self.board.pass_move(color)
                 return "PASS"
 
-            # 選擇最佳著法
-            best_move, best_prob = max(legal_moves, key=lambda x: x[1])
-
-            if best_move == 'pass':
-                self.board.pass_move(color)
-                return "PASS"
-
-            row, col = best_move
-            self.board.play_move(row, col, color)
-
-            return self.coords_to_gtp((row, col))
+            self.board.play_move(move[0], move[1], color)
+            return self.coords_to_gtp(move)
 
         except Exception as e:
             logger.error(f"生成著手失敗：{e}", exc_info=True)
@@ -514,6 +495,13 @@ def main():
         help='MCTS 模擬次數（默認：200）'
     )
     parser.add_argument(
+        '--search',
+        type=str,
+        choices=['puct', 'gumbel'],
+        default='puct',
+        help='搜尋種類（默認：puct）'
+    )
+    parser.add_argument(
         '--log-level',
         type=str,
         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
@@ -549,7 +537,8 @@ def main():
     engine = GTPEngine(
         model=model,
         mcts_simulations=args.mcts_simulations,
-        use_optimized=True
+        use_optimized=True,
+        search_kind=args.search
     )
 
     # 運行服務器

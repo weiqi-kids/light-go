@@ -167,7 +167,7 @@ def test_search_quality(
             legal_moves = []
             for row in range(19):
                 for col in range(19):
-                    if board.is_legal_move(row, col, current_player):
+                    if board.is_legal(row, col, current_player):
                         legal_moves.append((row, col))
 
             if legal_moves:
@@ -194,7 +194,7 @@ def test_search_quality(
         logger.info(f"  平均分支因子：{tree_stats['avg_branching_factor']:.2f}")
 
         # 分析著法分佈
-        sorted_moves = sorted(move_probs.items(), key=lambda x: x[1], reverse=True)
+        sorted_moves = sorted(enumerate(move_probs), key=lambda x: x[1], reverse=True)
         top_5_probs = [prob for _, prob in sorted_moves[:5]]
         top_5_concentration = sum(top_5_probs)
 
@@ -203,13 +203,13 @@ def test_search_quality(
         logger.info(f"  Top 5 著法集中度：{top_5_concentration*100:.1f}%")
 
         # Value 估計
-        value_estimate = root.value_sum / root.visit_count if root.visit_count > 0 else 0
+        value_estimate = root.total_value / root.visit_count if root.visit_count > 0 else 0
         results['value_estimates'].append(value_estimate)
 
         logger.info(f"  Value 估計：{value_estimate:.3f}")
 
         # Policy 熵（衡量策略的不確定性）
-        probs = np.array([p for _, p in move_probs.items()])
+        probs = np.asarray(move_probs)
         probs = probs[probs > 0]  # 移除零概率
         if len(probs) > 0:
             entropy = -np.sum(probs * np.log(probs + 1e-8))
@@ -269,10 +269,7 @@ def test_opening_coverage(
     for opening_name, positions in common_openings.items():
         opening_probs = []
         for pos in positions:
-            if pos in move_probs:
-                opening_probs.append(move_probs[pos])
-            else:
-                opening_probs.append(0.0)
+            opening_probs.append(float(move_probs[pos[0] * board.size + pos[1]]))
 
         total_prob = sum(opening_probs)
         results[opening_name] = {

@@ -160,23 +160,9 @@ def evaluate_vs_random(
             if current_player == 'b':
                 # AI 下棋（使用 MCTS）
                 try:
-                    move_probs, _ = mcts.search(board, current_player)
-
-                    # 選擇概率最高的合法著法
-                    legal_moves = []
-                    for move, prob in move_probs.items():
-                        if move == 'pass':
-                            legal_moves.append(('pass', prob))
-                        else:
-                            row, col = move
-                            if board.is_legal_move(row, col, current_player):
-                                legal_moves.append(((row, col), prob))
-
-                    if not legal_moves:
+                    move = mcts.select_move(board, current_player, temperature=0)
+                    if move is None:
                         move = 'pass'
-                    else:
-                        # 選擇概率最高的著法
-                        move = max(legal_moves, key=lambda x: x[1])[0]
 
                 except Exception as e:
                     logger.warning(f"MCTS 搜索失敗：{e}")
@@ -187,7 +173,7 @@ def evaluate_vs_random(
                 legal_moves = []
                 for row in range(19):
                     for col in range(19):
-                        if board.is_legal_move(row, col, current_player):
+                        if board.is_legal(row, col, current_player):
                             legal_moves.append((row, col))
 
                 if legal_moves and np.random.random() > 0.1:  # 90% 機率下棋，10% pass

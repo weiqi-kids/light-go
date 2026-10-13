@@ -33,8 +33,7 @@ sys.path.insert(0, str(project_root))
 from hf_models.modeling_go_ai import GoAIModel
 from core.architecture_genome import ArchitectureGenome
 from core.game_rules import GoBoard
-from core.mcts import MCTS
-from core.mcts_optimized import MCTSOptimized
+from core.search import create_search
 
 logging.basicConfig(
     level=logging.WARNING,  # 降低日誌級別，避免干擾對弈
@@ -74,18 +73,11 @@ class InteractiveGoGame:
         self.ai_color = ai_color
         self.human_color = 'w' if ai_color == 'b' else 'b'
 
-        # 創建 MCTS
+        # 創建搜尋（樹重用：每次 search 驗證盤面，對手落子後沿用孫節點子樹）
+        search_config = {'num_simulations': mcts_simulations, 'reuse_tree': True}
         if use_optimized_mcts:
-            self.mcts = MCTSOptimized(
-                model=model,
-                num_simulations=mcts_simulations,
-                batch_size=4
-            )
-        else:
-            self.mcts = MCTS(
-                model=model,
-                num_simulations=mcts_simulations
-            )
+            search_config.update(batch_size=4, eval_cache_size=100000)
+        self.mcts = create_search('puct', model=model, **search_config)
 
         self.board = GoBoard(size=board_size)
         self.move_history = []
@@ -217,7 +209,7 @@ class InteractiveGoGame:
 
             row, col = move
 
-            if self.board.is_legal_move(row, col, self.human_color):
+            if self.board.is_legal(row, col, self.human_color):
                 return (row, col)
             else:
                 print(f"❌ 非法著手！請選擇其他位置。")
@@ -233,31 +225,14 @@ class InteractiveGoGame:
         print(f"\n🤖 AI 思考中...")
 
         try:
-            move_probs, root = self.mcts.search(self.board, self.ai_color)
+            move = self.mcts.select_move(self.board, self.ai_color, temperature=0)
 
-            # 獲取勝率預測
-            win_rate = (root.value_sum / root.visit_count + 1) / 2 if root.visit_count > 0 else 0.5
+            # 勝率預測：子節點 Q 值是 AI（父節點輪走方）視角
+            root = self.mcts._cached_root
+            child = root.children.get(move) if root is not None and move is not None else None
+            win_rate = (child.q_value + 1) / 2 if child is not None and child.visit_count > 0 else 0.5
 
-            # 選擇概率最高的合法著法
-            legal_moves = []
-            for move, prob in move_probs.items():
-                if move == 'pass':
-                    legal_moves.append(('pass', prob))
-                else:
-                    row, col = move
-                    if self.board.is_legal_move(row, col, self.ai_color):
-                        legal_moves.append(((row, col), prob))
-
-            if not legal_moves:
-                return None, win_rate
-
-            # 選擇概率最高的著法
-            best_move, best_prob = max(legal_moves, key=lambda x: x[1])
-
-            if best_move == 'pass':
-                return None, win_rate
-
-            return best_move, win_rate
+            return move, win_rate
 
         except Exception as e:
             logger.error(f"AI 思考失敗：{e}")

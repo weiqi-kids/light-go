@@ -41,7 +41,7 @@ from core.muzero.trainer import MuZeroTrainer
 from core.muzero.replay_buffer import MuZeroReplayBuffer, Trajectory
 from core.evaluator import MuZeroEvaluator
 from core.game_rules import GoBoard
-from core.gumbel_mcts import GumbelMCTS
+from core.search import Search, create_search
 from core.sample_store import open_sample_dataset
 from input.lightgo_encoder import encode_board
 
@@ -328,7 +328,7 @@ def save_game_to_sgf(trajectory: Trajectory, board_size: int, result: float, fil
 
 
 def play_gumbel_game(
-    gumbel_mcts: GumbelMCTS,
+    gumbel_mcts: Search,
     board_size: int = 19,
     temperature_threshold: int = 30,
     max_moves: int = 400
@@ -337,7 +337,7 @@ def play_gumbel_game(
 
     Parameters
     ----------
-    gumbel_mcts : GumbelMCTS
+    gumbel_mcts : Search
         Gumbel MCTS 搜尋引擎
     board_size : int
         棋盤大小
@@ -472,7 +472,8 @@ def train_phase2(
     )
 
     # 建立 Gumbel MCTS（MuZero representation + prediction 作為盤面評估器）
-    gumbel_mcts = GumbelMCTS(
+    gumbel_mcts = create_search(
+        'gumbel',
         evaluator=MuZeroEvaluator(networks, device),
         board_size=config['board_size'],
         num_simulations=config['num_simulations'],

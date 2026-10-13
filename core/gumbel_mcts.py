@@ -1,4 +1,4 @@
-"""Gumbel MCTS 實作
+"""Gumbel MCTS 實作（:class:`core.search.Search` 的 ``'gumbel'`` 實作）
 
 使用 Gumbel-Top-k 採樣和 Sequential Halving 的改進版 MCTS。
 相比傳統 MCTS 需要 800+ 次模擬，Gumbel MCTS 只需 2-16 次即可達到相似品質。
@@ -26,6 +26,7 @@ import numpy as np
 
 from core.evaluator import Evaluation, PositionEvaluator, as_evaluator
 from core.game_rules import GoBoard
+from core.search import find_matching_node, policy_to_move
 from core.sequential_halving import sequential_halving
 
 
@@ -165,11 +166,15 @@ class GumbelMCTS:
     c_scale : float
         Q 值縮放係數（預設 1.0）
     board_size : int
-        棋盤大小
+        棋盤大小（搜尋時以實際棋盤大小為準）
     evaluator : PositionEvaluator, optional
         盤面評估器（優先於 model）
     device : optional
         包裝 model 時使用的推論裝置（預設為模型參數所在裝置）
+    temperature : float
+        ``select_move`` 的預設溫度（預設 0 = 取最佳）
+    reuse_tree : bool
+        是否重用上一次搜尋的子樹（預設 False；重用前會驗證盤面）
     """
 
     def __init__(
@@ -182,6 +187,8 @@ class GumbelMCTS:
         board_size: int = 19,
         evaluator: Optional[PositionEvaluator] = None,
         device=None,
+        temperature: float = 0.0,
+        reuse_tree: bool = False,
     ):
         self.model = model
         self.evaluator = as_evaluator(model, evaluator, device)
@@ -190,6 +197,9 @@ class GumbelMCTS:
         self.c_visit = c_visit
         self.c_scale = c_scale
         self.board_size = board_size
+        self.temperature = temperature
+        self.reuse_tree = reuse_tree
+        self._cached_root: Optional[GumbelMCTSNode] = None
 
     def search(
         self,
@@ -211,12 +221,24 @@ class GumbelMCTS:
             - 動作機率分布 (board_size^2 + 1)
             - 搜尋樹根節點
         """
-        # 建立根節點（color = 走進根節點的一方 = 輪走方的對手）
-        root = GumbelMCTSNode(
-            board=board.copy(),
-            color=_opponent(color),
-            is_root=True
-        )
+        # 索引換算以實際棋盤為準
+        self.board_size = board.size
+
+        # 可重用的子樹（盤面必須相同），否則建立新根節點
+        # （color = 走進根節點的一方 = 輪走方的對手）
+        root = None
+        if self.reuse_tree:
+            root = find_matching_node(self._cached_root, board, color)
+        if root is None:
+            root = GumbelMCTSNode(
+                board=board.copy(),
+                color=_opponent(color),
+                is_root=True
+            )
+        else:
+            root.parent = None
+            root.is_root = True
+        self._cached_root = root if self.reuse_tree else None
 
         # Step 1: 取得策略和價值（輪走方視角）
         evaluation = self._evaluate(board, color)
@@ -260,6 +282,22 @@ class GumbelMCTS:
         move_probs = self._build_policy(root, best_action_idx)
 
         return move_probs, root
+
+    def advance_tree(self, move: Optional[Tuple[int, int]]) -> bool:
+        """把快取的根推進到 ``move`` 的子節點；不在樹中則清空並回傳 False。"""
+        if self._cached_root is None:
+            return False
+        child = self._cached_root.children.get(move if move is not None else 'pass')
+        if child is None:
+            self._cached_root = None
+            return False
+        child.parent = None
+        self._cached_root = child
+        return True
+
+    def clear_tree(self) -> None:
+        """清除快取的搜尋樹"""
+        self._cached_root = None
 
     def _evaluate(self, board: GoBoard, color: str) -> Evaluation:
         """評估局面（``color`` 為輪走方；value 為其視角）"""
@@ -470,7 +508,7 @@ class GumbelMCTS:
         self,
         board: GoBoard,
         color: str,
-        temperature: float = 0.0
+        temperature: Optional[float] = None
     ) -> Optional[Tuple[int, int]]:
         """選擇動作
 
@@ -480,8 +518,8 @@ class GumbelMCTS:
             棋盤狀態
         color : str
             當前玩家
-        temperature : float
-            溫度參數（0 = 確定性選擇）
+        temperature : Optional[float]
+            溫度參數（0 = 確定性選擇；None = 實例預設值）
 
         Returns
         -------
@@ -489,22 +527,6 @@ class GumbelMCTS:
             選擇的動作，None 表示 pass
         """
         move_probs, _ = self.search(board, color)
-
-        if temperature == 0:
-            # 確定性選擇
-            move_idx = np.argmax(move_probs)
-        else:
-            # 溫度採樣
-            adjusted_probs = move_probs ** (1.0 / temperature)
-            adjusted_probs /= adjusted_probs.sum()
-            move_idx = np.random.choice(len(move_probs), p=adjusted_probs)
-
-        # 轉換為動作
-        board_size = board.size
-        if move_idx == board_size * board_size:
-            return None  # pass
-
-        row = move_idx // board_size
-        col = move_idx % board_size
-
-        return (row, col)
+        if temperature is None:
+            temperature = self.temperature
+        return policy_to_move(move_probs, board.size, temperature)

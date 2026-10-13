@@ -169,7 +169,10 @@ def benchmark_self_play_game(model, mcts_sims: int = 50):
     while not board.is_game_over() and move_count < max_moves:
         color = 'b' if move_count % 2 == 0 else 'w'
         move = mcts.select_move(board, color, temperature=0.5)
-        board.play_move(move[0], move[1], color)
+        if move is None:
+            board.pass_move(color)
+        else:
+            board.play_move(move[0], move[1], color)
         move_count += 1
 
     elapsed_original = time.time() - start
@@ -194,7 +197,10 @@ def benchmark_self_play_game(model, mcts_sims: int = 50):
     while not board.is_game_over() and move_count < max_moves:
         color = 'b' if move_count % 2 == 0 else 'w'
         move = mcts_opt.select_move(board, color, temperature=0.5)
-        board.play_move(move[0], move[1], color)
+        if move is None:
+            board.pass_move(color)
+        else:
+            board.play_move(move[0], move[1], color)
         move_count += 1
 
     elapsed_optimized = time.time() - start

@@ -7,7 +7,10 @@ from typing import Any, Dict, List, Optional, Iterable
 from input import sgf_to_input
 from core.strategy_manager import StrategyManager
 from core.auto_learner import AutoLearner
+from core.evaluator import MaterialEvaluator, PositionEvaluator
+from core.game_rules import GoBoard
 from core.mcts import MCTS, mcts_search
+from core.search import create_search
 
 # Now using real GoAIModel from hf_models
 from hf_models.modeling_go_ai import GoAIModel
@@ -24,9 +27,27 @@ class Engine:
     real model present.
     """
 
-    def __init__(self, model_dir: str) -> None:
-        """Create an engine with models stored under ``model_dir``."""
+    def __init__(
+        self,
+        model_dir: str,
+        search_kind: str = "puct",
+        evaluator: Optional[PositionEvaluator] = None,
+    ) -> None:
+        """Create an engine with models stored under ``model_dir``.
+
+        Parameters
+        ----------
+        model_dir:
+            Directory for strategies and model checkpoints.
+        search_kind:
+            Search used by :meth:`mcts_move` (``'puct'`` or ``'gumbel'``).
+        evaluator:
+            Position evaluator for the search; defaults to the model-free
+            :class:`~core.evaluator.MaterialEvaluator`.
+        """
         self.model_dir = model_dir
+        self.search_kind = search_kind
+        self.evaluator = evaluator or MaterialEvaluator()
         os.makedirs(self.model_dir, exist_ok=True)
         self.strategy_manager = StrategyManager(os.path.join(model_dir, "strategies"))
         self.auto_learner = AutoLearner(self.strategy_manager)
@@ -182,8 +203,7 @@ class Engine:
             is full or player should pass.
         """
         if use_mcts:
-            color_int = 1 if color.lower().startswith("b") else -1
-            return mcts_search(board, color=color_int, iterations=mcts_iterations)
+            return self.mcts_move(board, color, iterations=mcts_iterations)
 
         # Naive fallback: return first empty position
         for y, row in enumerate(board):
@@ -217,9 +237,23 @@ class Engine:
         tuple[int, int] | None
             Best move coordinates or None for pass.
         """
-        color_int = 1 if color.lower().startswith("b") else -1
-        mcts = MCTS(iterations=iterations)
-        return mcts.search(board, color=color_int, komi=komi)
+        go_board, stone = _matrix_to_go_board(board, color, komi)
+        search = self._create_search(iterations, go_board.size)
+        move = search.select_move(go_board, stone, temperature=0)
+        if move is None:
+            return None
+        row, col = move
+        return (col, row)
+
+    def _create_search(self, iterations: int, size: int):
+        """Build a fresh search (no tree reuse across independent positions)."""
+        return create_search(
+            self.search_kind,
+            self.evaluator,
+            num_simulations=iterations,
+            board_size=size,
+            reuse_tree=False,
+        )
 
     def mcts_move_with_probabilities(
         self,
@@ -248,9 +282,16 @@ class Engine:
         tuple[Move | None, dict[Move, float]]
             Best move and dictionary mapping moves to visit probabilities.
         """
-        color_int = 1 if color.lower().startswith("b") else -1
-        mcts = MCTS(iterations=iterations)
-        probs = mcts.get_move_probabilities(board, color=color_int, komi=komi)
+        go_board, stone = _matrix_to_go_board(board, color, komi)
+        size = go_board.size
+        search = self._create_search(iterations, size)
+        policy, _ = search.search(go_board, stone)
+        total = float(policy[: size * size].sum())
+        probs = {
+            (idx % size, idx // size): float(policy[idx]) / total
+            for idx in range(size * size)
+            if policy[idx] > 0
+        }
         if not probs:
             return None, {}
         best_move = max(probs.keys(), key=lambda m: probs[m])
@@ -277,6 +318,22 @@ def predict(input_data: Any) -> Any:
 
     board, color = _extract_board_and_color(input_data)
     return _engine_instance.decide_move(board, color)
+
+
+def _matrix_to_go_board(
+    board: List[List[int]], color: str, komi: float
+) -> tuple[GoBoard, str]:
+    """Convert a ``board[y][x]`` matrix (1 black, -1 white) to a :class:`GoBoard`.
+
+    Returns the board and the side to move as ``'b'``/``'w'``. Stones are placed
+    as setup (no capture/legality checks), so any matrix is accepted.
+    """
+    go_board = GoBoard(size=len(board), komi=komi)
+    black = [(y, x) for y, row in enumerate(board) for x, val in enumerate(row) if val == 1]
+    white = [(y, x) for y, row in enumerate(board) for x, val in enumerate(row) if val == -1]
+    go_board.board.apply_setup(black, white, [])
+    stone = "b" if color.lower().startswith("b") else "w"
+    return go_board, stone
 
 
 def _extract_board_and_color(data: Any) -> tuple[List[List[int]], str]:

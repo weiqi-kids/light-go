@@ -207,6 +207,10 @@ class GoBoard:
         bool
             True if move would be suicide
         """
+        # Fast path: an empty neighbour is a liberty of the new stone
+        if any(self.board.get(r, c) is None for r, c in self.get_neighbors(row, col)):
+            return False
+
         # Check if move captures opponent stones
         captured = self.get_captured_groups(row, col, color)
         if captured:

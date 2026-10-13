@@ -16,8 +16,7 @@ import logging
 import torch
 
 from core.game_rules import GoBoard
-from core.mcts import MCTS
-from core.gumbel_mcts import GumbelMCTS
+from core.search import create_search
 from input.lightgo_encoder import LightGoEncoder
 
 logger = logging.getLogger(__name__)
@@ -87,6 +86,13 @@ class SelfPlayWorker:
         Directory to save SGF files (default "data/sgf/selfplay")
     worker_id : int
         Worker identifier for parallel execution (default 0)
+    use_gumbel_mcts : bool
+        Shorthand for ``search_kind='gumbel'`` (default False)
+    gumbel_num_sampled_actions : int
+        Gumbel-Top-k ``k`` (only for the gumbel search)
+    search_kind : Optional[str]
+        ``'puct'`` or ``'gumbel'`` (see :func:`core.search.create_search`);
+        overrides ``use_gumbel_mcts`` when given
     """
 
     def __init__(
@@ -101,7 +107,8 @@ class SelfPlayWorker:
         sgf_dir: Optional[str] = None,
         worker_id: int = 0,
         use_gumbel_mcts: bool = False,
-        gumbel_num_sampled_actions: int = 16
+        gumbel_num_sampled_actions: int = 16,
+        search_kind: Optional[str] = None,
     ):
         self.model = model
         self.board_size = board_size
@@ -112,7 +119,6 @@ class SelfPlayWorker:
         self.sgf_dir = sgf_dir or "data/sgf/selfplay"
         self.worker_id = worker_id
         self.game_counter = 0
-        self.use_gumbel_mcts = use_gumbel_mcts
 
         # Set model to evaluation mode for inference
         self.model.eval()
@@ -120,22 +126,16 @@ class SelfPlayWorker:
         # LightGo 2-plane encoder
         self.encoder = LightGoEncoder(board_size=board_size)
 
-        # Create MCTS engine (traditional or Gumbel)
-        if use_gumbel_mcts:
-            self.mcts = GumbelMCTS(
-                model=model,
-                num_simulations=num_simulations,
-                num_sampled_actions=gumbel_num_sampled_actions,
-                board_size=board_size
-            )
-            logger.info(f"Using Gumbel MCTS with {num_simulations} simulations")
+        # Create search engine (PUCT or Gumbel) through the Search interface
+        kind = search_kind or ('gumbel' if use_gumbel_mcts else 'puct')
+        self.use_gumbel_mcts = kind == 'gumbel'
+        config = {'num_simulations': num_simulations, 'board_size': board_size}
+        if kind == 'gumbel':
+            config['num_sampled_actions'] = gumbel_num_sampled_actions
         else:
-            self.mcts = MCTS(
-                model=model,
-                num_simulations=num_simulations,
-                temperature=1.0,
-                board_size=board_size
-            )
+            config['temperature'] = 1.0
+        self.mcts = create_search(kind, model=model, **config)
+        logger.info(f"Using {kind} search with {num_simulations} simulations")
 
     def play_game(self, verbose: bool = False) -> GameResult:
         """Play one self-play game.

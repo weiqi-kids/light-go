@@ -1,6 +1,6 @@
 """Position evaluator：盤面 → (policy, logits, value) 的唯一接縫。
 
-所有搜尋（MCTS、MCTSOptimized、GumbelMCTS）都只透過 :class:`PositionEvaluator`
+所有搜尋（MCTS／PUCT、GumbelMCTS；見 core.search）都只透過 :class:`PositionEvaluator`
 取得網路評估，編碼、批次、裝置、softmax 都藏在這裡。
 
 慣例（所有實作都必須遵守）：

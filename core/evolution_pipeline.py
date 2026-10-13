@@ -20,7 +20,7 @@ import torch.optim as optim
 from core.evolution_manager import EvolutionManager, Individual
 from core.self_play import SelfPlayWorker, generate_training_data
 from core.game_rules import GoBoard
-from core.mcts import MCTS
+from core.search import create_search
 
 logger = logging.getLogger(__name__)
 
@@ -256,8 +256,8 @@ class EvolutionPipeline:
         model2.eval()
 
         # 創建 MCTS 引擎
-        mcts1 = MCTS(model=model1, num_simulations=self.num_simulations // 2)
-        mcts2 = MCTS(model=model2, num_simulations=self.num_simulations // 2)
+        mcts1 = create_search('puct', model=model1, num_simulations=self.num_simulations // 2)
+        mcts2 = create_search('puct', model=model2, num_simulations=self.num_simulations // 2)
 
         # 對弈
         wins = 0
@@ -283,8 +283,12 @@ class EvolutionPipeline:
                 # 選擇著手
                 move = current_mcts.select_move(board, current_color, temperature=0.1)
 
-                # 下子
-                success = board.play_move(move[0], move[1], current_color)
+                # 下子（None = pass）
+                if move is None:
+                    board.pass_move(current_color)
+                    success = True
+                else:
+                    success = board.play_move(move[0], move[1], current_color)
 
                 if not success:
                     # 非法著手，判負

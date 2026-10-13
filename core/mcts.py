@@ -1,6 +1,7 @@
 """Monte Carlo Tree Search (MCTS) implementation for Go.
 
-This module implements AlphaGo Zero style MCTS that combines:
+The ``'puct'`` implementation of :class:`core.search.Search`. This module
+implements AlphaGo Zero style MCTS that combines:
 - Policy and value predictions from a :class:`~core.evaluator.PositionEvaluator`
 - UCB (Upper Confidence Bound) for exploration
 - Dirichlet noise for root exploration
@@ -19,11 +20,12 @@ from __future__ import annotations
 
 import math
 import numpy as np
-from typing import Optional, List, Tuple, Dict, Union
+from typing import Optional, List, Tuple, Dict, Hashable, Union
 from dataclasses import dataclass
 
 from core.evaluator import PositionEvaluator, as_evaluator
 from core.game_rules import GoBoard
+from core.search import find_matching_node, policy_to_move, position_key
 
 
 def _opponent(color: str) -> str:
@@ -36,8 +38,9 @@ class MCTSNode:
 
     Attributes
     ----------
-    board : GoBoard
-        Current board state
+    board : Optional[GoBoard]
+        Current board state; ``None`` for a child means "derive lazily from
+        ``parent.board`` + ``move``" (most expanded children are never visited)
     parent : Optional[MCTSNode]
         Parent node
     move : Optional[Tuple[int, int]]
@@ -55,7 +58,7 @@ class MCTSNode:
         Sum of value estimates from simulations, from ``color``'s perspective
     """
 
-    board: GoBoard
+    board: Optional[GoBoard]
     parent: Optional[MCTSNode] = None
     move: Optional[Tuple[int, int]] = None
     color: str = 'b'
@@ -63,9 +66,22 @@ class MCTSNode:
 
     def __post_init__(self):
         """Initialize mutable attributes."""
+        if self.board is None:
+            # 延遲建立：第一次讀取 ``board`` 時才由父節點盤面＋``move`` 算出
+            del self.__dict__['board']
         self.children: Dict[Tuple[int, int], MCTSNode] = {}
         self.visit_count: int = 0
         self.total_value: float = 0.0
+        self.virtual_loss: int = 0  # 批次搜尋中尚未回傳的路徑數
+
+    def __getattr__(self, name: str):
+        """Materialise a lazily created child board on first access."""
+        if name == 'board' and self.__dict__.get('parent') is not None and self.__dict__.get('move') is not None:
+            board = self.parent.board.copy()
+            board.play_move(self.move[0], self.move[1], self.color)
+            self.board = board
+            return board
+        raise AttributeError(name)
 
     @property
     def to_play(self) -> str:
@@ -106,12 +122,27 @@ class MCTSNode:
     def ucb_score(self) -> float:
         """UCB score for action selection.
 
+        未訪問的子節點用父節點的平均價值（輪走方視角，即 ``-parent.q_value``）
+        當 Q（first-play urgency）；若用 0，當所有著手價值都 > 0 時，第一個被
+        訪問的子節點會吃掉全部模擬。
+
+        虛擬損失把每條進行中的路徑視為一次「輸」（Q 下降、U 縮小），
+        讓同一批次的選擇分散到不同葉節點；沒有虛擬損失時就是 Q + U。
+
         Returns
         -------
         float
             Q(s,a) + U(s,a)
         """
-        return self.q_value + self.u_value
+        if self.virtual_loss == 0:
+            if self.visit_count == 0 and self.parent is not None and self.parent.visit_count > 0:
+                return -self.parent.q_value + self.u_value
+            return self.q_value + self.u_value
+        visits = self.visit_count + self.virtual_loss
+        q_value = (self.total_value - self.virtual_loss) / visits
+        c_puct = 1.4
+        parent_visits = self.parent.visit_count + self.parent.virtual_loss if self.parent else 0
+        return q_value + c_puct * self.prior * math.sqrt(parent_visits) / (1 + visits)
 
     def is_leaf(self) -> bool:
         """Check if this is a leaf node.
@@ -160,18 +191,14 @@ class MCTSNode:
             if move in self.children:
                 continue
 
-            # Create child board
-            child_board = self.board.copy()
-            child_board.play_move(move[0], move[1], next_color)
-
             # Get prior probability (use uniform prior as fallback)
             board_size = self.board.size
             default_prior = 1.0 / (board_size * board_size + 1)
             prior = policy.get(move, default_prior)
 
-            # Create child node
+            # Create child node (board is built lazily on first access)
             child = MCTSNode(
-                board=child_board,
+                board=None,
                 parent=self,
                 move=move,
                 color=next_color,
@@ -193,7 +220,10 @@ class MCTSNode:
 
 
 class MCTS:
-    """Monte Carlo Tree Search engine.
+    """PUCT Monte Carlo Tree Search（:class:`~core.search.Search` 的 ``'puct'`` 實作）。
+
+    也吸收了舊 ``MCTSOptimized`` 的實作細節（皆為選項）：批次葉節點評估＋虛擬損失、
+    動態批次大小、以 ``(盤面, 輪走方)`` 為鍵的評估快取。
 
     Parameters
     ----------
@@ -208,13 +238,30 @@ class MCTS:
         Dirichlet noise alpha for exploration (default 0.03)
     dirichlet_epsilon : float
         Fraction of Dirichlet noise to add (default 0.25)
+    board_size : int
+        Nominal board size (the searched board's own size is what is used)
     reuse_tree : bool
-        Whether to reuse search tree between moves (default True)
+        Whether to reuse search tree between moves (default True). A cached
+        tree is only reused when a node in it (root, child or grandchild)
+        matches the searched position; otherwise a fresh tree is built.
     max_tree_nodes : int
         Maximum number of nodes to keep in cached tree (default 100000)
         When exceeded, less visited branches are pruned
     evaluator : PositionEvaluator, optional
         Position evaluator (takes precedence over ``model``)
+    batch_size : int
+        Leaves evaluated per evaluator call (default 1 = sequential search)
+    use_virtual_loss : bool
+        Apply virtual loss while collecting a batch so leaves diversify
+    dynamic_batch : bool
+        Shrink the batch from ``max_batch_size`` to ``min_batch_size`` as the
+        search progresses (only when ``batch_size > 1``)
+    min_batch_size, max_batch_size : int
+        Bounds for ``dynamic_batch``
+    eval_cache_size : int
+        Max entries of the ``(position, colour)`` evaluation cache; 0 disables it
+    device : optional
+        Inference device when wrapping ``model``
     """
 
     def __init__(
@@ -228,9 +275,16 @@ class MCTS:
         reuse_tree: bool = True,
         max_tree_nodes: int = 100000,
         evaluator: Optional[PositionEvaluator] = None,
+        batch_size: int = 1,
+        use_virtual_loss: bool = True,
+        dynamic_batch: bool = False,
+        min_batch_size: int = 4,
+        max_batch_size: int = 32,
+        eval_cache_size: int = 0,
+        device=None,
     ):
         self.model = model
-        self.evaluator = as_evaluator(model, evaluator)
+        self.evaluator = as_evaluator(model, evaluator, device)
         self.num_simulations = num_simulations
         self.temperature = temperature
         self.dirichlet_alpha = dirichlet_alpha
@@ -238,10 +292,21 @@ class MCTS:
         self.board_size = board_size
         self.reuse_tree = reuse_tree
         self.max_tree_nodes = max_tree_nodes
+        self.batch_size = max(1, batch_size)
+        self.use_virtual_loss = use_virtual_loss
+        self.dynamic_batch = dynamic_batch
+        self.min_batch_size = max(1, min_batch_size)
+        self.max_batch_size = max(self.min_batch_size, max_batch_size)
+        self.eval_cache_size = eval_cache_size
 
         # Tree reuse: 緩存上一次搜索的根節點
         self._cached_root: Optional[MCTSNode] = None
+        # 評估快取：position_key(board, color) -> (policy dict, value)
+        self.evaluation_cache: Dict[Hashable, Tuple[Dict, float]] = {}
 
+    # ------------------------------------------------------------------
+    # Search interface
+    # ------------------------------------------------------------------
     def search(self, board: GoBoard, color: str) -> Tuple[np.ndarray, MCTSNode]:
         """Run MCTS search from current position.
 
@@ -258,73 +323,71 @@ class MCTS:
             - Move probabilities (board_size^2 + 1 for pass)
             - Root node of search tree
         """
-        # 嘗試使用緩存的樹
-        root = None
-        if self.reuse_tree and self._cached_root is not None:
-            root = self._cached_root
-            # 驗證緩存的樹是否匹配當前棋盤（簡單檢查顏色）
-            if root.to_play != color:
-                root = None  # 顏色不匹配，需要新建
+        root = self._find_reusable_root(board, color) if self.reuse_tree else None
 
-        # 如果沒有緩存或緩存無效，創建新的根節點
         if root is None:
             root = MCTSNode(board=board.copy(), color=_opponent(color))
-
-            # Get initial policy from neural network
             policy, _ = self._evaluate(root.board, color)
-
-            # Add Dirichlet noise for exploration at root
-            policy = self._add_dirichlet_noise(policy, board.size)
-
-            # Expand root
-            root.expand(policy)
+            root.expand(self._add_dirichlet_noise(policy, board.size))
         else:
-            # 使用緩存的樹，但仍要添加 Dirichlet 噪聲到根節點
-            # 重新獲取策略並混合噪聲
-            if root.children:
-                policy, _ = self._evaluate(root.board, color)
-                policy = self._add_dirichlet_noise(policy, board.size)
-                # 更新子節點的先驗概率
-                for move, child in root.children.items():
-                    if move in policy:
-                        # 混合舊先驗和新噪聲
-                        child.prior = 0.5 * child.prior + 0.5 * policy[move]
-
-        # Run simulations
-        for _ in range(self.num_simulations):
-            node = root
-
-            # Selection: traverse tree to leaf
-            while not node.is_leaf():
-                node = node.select_child()
-
-            # Expansion & Evaluation (value is node.to_play's perspective)
-            if node.visit_count == 0:
-                # First visit: get value from network
-                _, value = self._evaluate(node.board, node.to_play)
+            # 重用子樹：斷開舊父節點，以新的根評估＋噪聲重設子節點先驗
+            root.parent = None
+            policy, _ = self._evaluate(root.board, color)
+            noisy_policy = self._add_dirichlet_noise(policy, board.size)
+            if root.is_leaf():
+                root.expand(noisy_policy)
             else:
-                # Expand and evaluate
-                policy, value = self._evaluate(node.board, node.to_play)
-                node.expand(policy)
+                for move, child in root.children.items():
+                    child.prior = noisy_policy.get(move, child.prior)
 
-            # Backup: propagate value up the tree
-            self._backup(node, value)
+        self._run_simulations(root)
 
-        # Compute move probabilities from visit counts
         move_probs = self._get_move_probabilities(root, board.size)
 
         # 緩存根節點供下次使用
-        self._cached_root = root
-
-        # 如果樹太大，執行剪枝
+        self._cached_root = root if self.reuse_tree else None
         self._maybe_prune_tree()
 
         return move_probs, root
 
+    def select_move(
+        self,
+        board: GoBoard,
+        color: str,
+        temperature: Optional[float] = None
+    ) -> Optional[Tuple[int, int]]:
+        """Select move using MCTS.
+
+        Parameters
+        ----------
+        board : GoBoard
+            Current board state
+        color : str
+            Color to move
+        temperature : Optional[float]
+            Override default temperature (0 = most visited)
+
+        Returns
+        -------
+        Optional[Tuple[int, int]]
+            Selected move (row, col), or None for pass
+        """
+        old_temp = self.temperature
+        if temperature is not None:
+            self.temperature = temperature
+        try:
+            move_probs, _ = self.search(board, color)
+            # move_probs 已套用溫度，直接依比例採樣（溫度 0 時為 one-hot）
+            sample_temp = 0.0 if self.temperature == 0 else 1.0
+        finally:
+            self.temperature = old_temp
+        return policy_to_move(move_probs, board.size, sample_temp)
+
     def advance_tree(self, move: Optional[Tuple[int, int]]) -> bool:
         """根據落子推進搜索樹
 
-        將緩存的根移動到對應的子節點，實現樹重用。
+        將緩存的根移動到對應的子節點，實現樹重用。下一次 :meth:`search`
+        仍會驗證盤面是否一致，不一致就重建。
 
         Parameters
         ----------
@@ -339,27 +402,33 @@ class MCTS:
         if self._cached_root is None:
             return False
 
-        # 將 None 轉換為 'pass'
         move_key = move if move is not None else 'pass'
-
-        if move_key in self._cached_root.children:
-            # 找到對應的子節點
-            child = self._cached_root.children[move_key]
-
-            # 斷開父節點連結（幫助 GC 回收舊樹）
-            child.parent = None
-
-            # 設置為新的根
-            self._cached_root = child
-            return True
-        else:
-            # 動作不在樹中，清除緩存
+        child = self._cached_root.children.get(move_key)
+        if child is None:
             self._cached_root = None
             return False
+
+        child.parent = None  # 斷開父節點連結（幫助 GC 回收舊樹）
+        self._cached_root = child
+        return True
 
     def clear_tree(self) -> None:
         """清除緩存的搜索樹"""
         self._cached_root = None
+
+    def clear_cache(self) -> None:
+        """清除評估快取"""
+        self.evaluation_cache.clear()
+
+    # ------------------------------------------------------------------
+    # Tree reuse
+    # ------------------------------------------------------------------
+    def _find_reusable_root(self, board: GoBoard, color: str) -> Optional[MCTSNode]:
+        """在快取樹的根、子、孫節點中找與 (board, color) 相同的局面；找不到就丟掉快取樹。"""
+        node = find_matching_node(self._cached_root, board, color)
+        if node is None:
+            self._cached_root = None
+        return node
 
     def get_tree_stats(self) -> Dict[str, int]:
         """獲取緩存樹的統計信息
@@ -372,17 +441,14 @@ class MCTS:
         if self._cached_root is None:
             return {'cached': False, 'visit_count': 0, 'num_children': 0}
 
-        def count_nodes(node: MCTSNode, depth: int = 0) -> Tuple[int, int]:
-            """遞歸計算節點數和最大深度"""
-            count = 1
-            max_depth = depth
-            for child in node.children.values():
-                c, d = count_nodes(child, depth + 1)
-                count += c
-                max_depth = max(max_depth, d)
-            return count, max_depth
-
-        total_nodes, max_depth = count_nodes(self._cached_root)
+        total_nodes = 0
+        max_depth = 0
+        stack = [(self._cached_root, 0)]
+        while stack:
+            node, depth = stack.pop()
+            total_nodes += 1
+            max_depth = max(max_depth, depth)
+            stack.extend((child, depth + 1) for child in node.children.values())
 
         return {
             'cached': True,
@@ -413,30 +479,19 @@ class MCTS:
             if not node.children:
                 return 1
 
-            # 按訪問次數排序
             sorted_children = sorted(
                 node.children.items(),
                 key=lambda x: x[1].visit_count,
                 reverse=True
             )
 
-            # 計算要保留的子節點數量（至少保留 1 個）
+            # 計算要保留的子節點數量（至少保留 1 個）；深度越深，保留越少
             keep_count = max(1, int(len(sorted_children) * keep_ratio))
-
-            # 深度越深，保留越少
             if depth > 3:
                 keep_count = max(1, keep_count // 2)
 
-            # 剪枝
-            new_children = {}
-            total_nodes = 1
-            for i, (move, child) in enumerate(sorted_children):
-                if i < keep_count:
-                    new_children[move] = child
-                    total_nodes += prune_node(child, depth + 1)
-
-            node.children = new_children
-            return total_nodes
+            node.children = dict(sorted_children[:keep_count])
+            return 1 + sum(prune_node(child, depth + 1) for child in node.children.values())
 
         return prune_node(self._cached_root)
 
@@ -449,28 +504,91 @@ class MCTS:
         if stats.get('total_nodes', 0) > self.max_tree_nodes:
             self._prune_tree(keep_ratio=0.5)
 
+    # ------------------------------------------------------------------
+    # Simulation
+    # ------------------------------------------------------------------
+    def _run_simulations(self, root: MCTSNode) -> None:
+        """執行 ``num_simulations`` 次模擬（每批收集多個葉節點一次評估）。"""
+        done = 0
+        while done < self.num_simulations:
+            batch = min(self._get_batch_size(done), self.num_simulations - done)
+            apply_vl = self.use_virtual_loss and batch > 1
+
+            leaves: List[MCTSNode] = []
+            for _ in range(batch):
+                node = root
+                while not node.is_leaf():
+                    node = node.select_child()
+                    if apply_vl:
+                        node.virtual_loss += 1
+                leaves.append(node)
+
+            evaluations = self._evaluate_batch(
+                [leaf.board for leaf in leaves],
+                [leaf.to_play for leaf in leaves],
+            )
+
+            for leaf, (policy, value) in zip(leaves, evaluations):
+                if apply_vl:
+                    node = leaf
+                    while node is not root:
+                        node.virtual_loss -= 1
+                        node = node.parent
+                if leaf.is_leaf():
+                    leaf.expand(policy)
+                self._backup(leaf, value)
+
+            done += batch
+
+    def _get_batch_size(self, simulations_done: int) -> int:
+        """本輪批次大小；``dynamic_batch`` 時前期大、後期小。"""
+        if self.batch_size <= 1 or not self.dynamic_batch:
+            return self.batch_size
+
+        progress = simulations_done / max(self.num_simulations, 1)
+        if progress < 0.3:
+            return self.max_batch_size
+        if progress < 0.7:
+            ratio = (progress - 0.3) / 0.4
+            size = int(self.max_batch_size - ratio * (self.max_batch_size - self.min_batch_size))
+            return max(self.min_batch_size, min(self.max_batch_size, size))
+        return self.min_batch_size
+
     def _evaluate(
         self,
         board: GoBoard,
         color: str
     ) -> Tuple[Dict[Union[Tuple[int, int], str], float], float]:
-        """Evaluate position with the position evaluator.
+        """Evaluate one position; value is from ``color``'s perspective."""
+        return self._evaluate_batch([board], [color])[0]
 
-        Parameters
-        ----------
-        board : GoBoard
-            Board state to evaluate
-        color : str
-            Side to move
+    def _evaluate_batch(
+        self,
+        boards: List[GoBoard],
+        colors: List[str]
+    ) -> List[Tuple[Dict[Union[Tuple[int, int], str], float], float]]:
+        """批次評估（有開快取時只評估未命中的盤面）。
 
         Returns
         -------
-        Tuple[Dict[Union[Tuple[int, int], str], float], float]
-            - Policy dictionary: {(row, col): probability, 'pass': probability}
-            - Value estimate (-1 to 1) from ``color``'s perspective
+        List[Tuple[Dict, float]]
+            (policy dict, 輪走方視角 value)
         """
-        evaluation = self.evaluator.evaluate_one(board, color)
-        return evaluation.policy_dict(), evaluation.value
+        if self.eval_cache_size <= 0:
+            evaluations = self.evaluator.evaluate(boards, colors)
+            return [(e.policy_dict(), e.value) for e in evaluations]
+
+        keys = [position_key(board, color) for board, color in zip(boards, colors)]
+        missing = [i for i, key in enumerate(keys) if key not in self.evaluation_cache]
+        if missing:
+            evaluations = self.evaluator.evaluate(
+                [boards[i] for i in missing], [colors[i] for i in missing]
+            )
+            if len(self.evaluation_cache) + len(missing) > self.eval_cache_size:
+                self.evaluation_cache.clear()
+            for i, evaluation in zip(missing, evaluations):
+                self.evaluation_cache[keys[i]] = (evaluation.policy_dict(), evaluation.value)
+        return [self.evaluation_cache[key] for key in keys]
 
     def _add_dirichlet_noise(
         self,
@@ -492,21 +610,15 @@ class MCTS:
             Policy with Dirichlet noise
         """
         moves = list(policy.keys())
-        if not moves:
+        if not moves or self.dirichlet_epsilon == 0:
             return policy
 
-        # Generate Dirichlet noise
         noise = np.random.dirichlet([self.dirichlet_alpha] * len(moves))
 
-        # Mix policy with noise
-        noisy_policy = {}
-        for i, move in enumerate(moves):
-            noisy_policy[move] = (
-                (1 - self.dirichlet_epsilon) * policy[move] +
-                self.dirichlet_epsilon * noise[i]
-            )
-
-        return noisy_policy
+        return {
+            move: (1 - self.dirichlet_epsilon) * policy[move] + self.dirichlet_epsilon * noise[i]
+            for i, move in enumerate(moves)
+        }
 
     def _backup(self, node: MCTSNode, value: float) -> None:
         """Propagate value up the tree.
@@ -534,92 +646,37 @@ class MCTS:
     ) -> np.ndarray:
         """Compute move probabilities from visit counts.
 
-        Parameters
-        ----------
-        root : MCTSNode
-            Root node of search tree
-        board_size : int
-            Size of the board
+        沒有合法著手時回傳 pass；尚無訪問（``num_simulations=0``）時用先驗。
 
         Returns
         -------
         np.ndarray
-            Move probabilities (board_size^2 + 1)
+            Move probabilities (board_size^2 + 1), sums to 1
         """
-        move_probs = np.zeros(board_size * board_size + 1, dtype=np.float32)
+        num_actions = board_size * board_size + 1
+        move_probs = np.zeros(num_actions, dtype=np.float32)
+
+        if not root.children:
+            move_probs[-1] = 1.0
+            return move_probs
+
+        def move_index(move) -> int:
+            return board_size * board_size if move == 'pass' else move[0] * board_size + move[1]
+
+        visits = np.zeros(num_actions, dtype=np.float64)
+        for move, child in root.children.items():
+            visits[move_index(move)] = child.visit_count
+        if visits.sum() == 0:
+            for move, child in root.children.items():
+                visits[move_index(move)] = child.prior
 
         if self.temperature == 0:
-            # Greedy: select most visited move
-            best_move = max(root.children.items(), key=lambda x: x[1].visit_count)
-            move = best_move[0]
-            if move == 'pass':
-                move_idx = board_size * board_size
-            else:
-                move_idx = move[0] * board_size + move[1]
-            move_probs[move_idx] = 1.0
-        else:
-            # Temperature-based selection
-            visits = np.zeros(board_size * board_size + 1, dtype=np.float32)
+            move_probs[int(np.argmax(visits))] = 1.0
+            return move_probs
 
-            for move, child in root.children.items():
-                if move == 'pass':
-                    move_idx = board_size * board_size
-                else:
-                    move_idx = move[0] * board_size + move[1]
-                visits[move_idx] = child.visit_count
+        visits = (visits / visits.max()) ** (1.0 / self.temperature)
+        return (visits / visits.sum()).astype(np.float32)
 
-            # Apply temperature
-            visits = visits ** (1.0 / self.temperature)
-
-            # Normalize
-            if visits.sum() > 0:
-                move_probs = visits / visits.sum()
-
-        return move_probs
-
-    def select_move(
-        self,
-        board: GoBoard,
-        color: str,
-        temperature: Optional[float] = None
-    ) -> Optional[Tuple[int, int]]:
-        """Select move using MCTS.
-
-        Parameters
-        ----------
-        board : GoBoard
-            Current board state
-        color : str
-            Color to move
-        temperature : Optional[float]
-            Override default temperature
-
-        Returns
-        -------
-        Optional[Tuple[int, int]]
-            Selected move (row, col), or None for pass
-        """
-        if temperature is not None:
-            old_temp = self.temperature
-            self.temperature = temperature
-
-        move_probs, root = self.search(board, color)
-
-        # Sample move from distribution
-        move_idx = np.random.choice(len(move_probs), p=move_probs)
-
-        if temperature is not None:
-            self.temperature = old_temp
-
-        # Convert index to (row, col) or None for pass
-        board_size = board.size
-        if move_idx == board_size * board_size:
-            return None  # Pass move
-
-        row = move_idx // board_size
-        col = move_idx % board_size
-
-        return (row, col)
 
 
 # =============================================================================

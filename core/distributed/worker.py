@@ -14,7 +14,7 @@ import multiprocessing as mp
 import torch
 
 from core.game_rules import GoBoard
-from core.mcts import MCTS
+from core.search import create_search
 from core.self_play import TrainingExample
 from input.lightgo_encoder import LightGoEncoder
 
@@ -247,7 +247,8 @@ class DistributedSelfPlayWorker:
         consecutive_passes = 0
 
         # Create MCTS engine
-        mcts = MCTS(
+        mcts = create_search(
+            'puct',
             model=self.model,
             num_simulations=self.num_simulations,
             temperature=1.0,

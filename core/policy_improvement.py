@@ -14,7 +14,7 @@ import numpy as np
 import torch
 
 from core.game_rules import GoBoard
-from core.mcts import MCTS
+from core.search import Search, create_search
 
 logger = logging.getLogger(__name__)
 
@@ -196,14 +196,16 @@ class PolicyImprovementVerifier:
         games = []
 
         # Create MCTS engines
-        mcts1 = MCTS(
+        mcts1 = create_search(
+            'puct',
             model=model1,
             num_simulations=self.mcts_simulations,
             temperature=0.0,  # Greedy selection for evaluation
             board_size=self.board_size
         )
 
-        mcts2 = MCTS(
+        mcts2 = create_search(
+            'puct',
             model=model2,
             num_simulations=self.mcts_simulations,
             temperature=0.0,
@@ -271,16 +273,16 @@ class PolicyImprovementVerifier:
 
     def _play_single_game(
         self,
-        black_mcts: MCTS,
-        white_mcts: MCTS
+        black_mcts: Search,
+        white_mcts: Search
     ) -> Dict[str, Any]:
         """Play a single game between two MCTS engines.
 
         Parameters
         ----------
-        black_mcts : MCTS
+        black_mcts : Search
             MCTS engine for Black
-        white_mcts : MCTS
+        white_mcts : Search
             MCTS engine for White
 
         Returns
