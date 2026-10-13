@@ -1,39 +1,14 @@
 """Gumbel MCTS 單元測試"""
 
-import pytest
+from __future__ import annotations
+
 import numpy as np
-import torch
-import torch.nn as nn
+import pytest
 
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-
+from core.evaluator import UniformEvaluator
 from core.game_rules import GoBoard
 from core.sequential_halving import sequential_halving, HalvingResult
 from core.gumbel_mcts import GumbelMCTS, GumbelMCTSNode
-
-
-class MockGoModel(nn.Module):
-    """模擬圍棋模型"""
-
-    def __init__(self, board_size: int = 9):
-        super().__init__()
-        self.board_size = board_size
-        self.num_actions = board_size * board_size + 1
-
-        # 簡單的線性層
-        self.policy = nn.Linear(2 * board_size * board_size, self.num_actions)
-        self.value = nn.Linear(2 * board_size * board_size, 1)
-
-    def forward(self, x):
-        batch_size = x.shape[0]
-        flat = x.view(batch_size, -1)
-
-        policy_logits = self.policy(flat)
-        value = torch.tanh(self.value(flat))
-
-        return policy_logits, value
 
 
 class TestSequentialHalving:
@@ -156,15 +131,10 @@ class TestGumbelMCTS:
     """GumbelMCTS 測試"""
 
     @pytest.fixture
-    def model(self):
-        """建立模擬模型"""
-        return MockGoModel(board_size=9)
-
-    @pytest.fixture
-    def mcts(self, model):
-        """建立 Gumbel MCTS"""
+    def mcts(self) -> GumbelMCTS:
+        """建立 Gumbel MCTS（均勻評估器）"""
         return GumbelMCTS(
-            model=model,
+            evaluator=UniformEvaluator(),
             num_simulations=8,
             num_sampled_actions=8,
             board_size=9
@@ -248,9 +218,8 @@ class TestGumbelMCTSIntegration:
 
     def test_multiple_searches_consistency(self):
         """多次搜尋的一致性"""
-        model = MockGoModel(board_size=9)
         mcts = GumbelMCTS(
-            model=model,
+            evaluator=UniformEvaluator(),
             num_simulations=16,
             board_size=9
         )
@@ -269,9 +238,8 @@ class TestGumbelMCTSIntegration:
 
     def test_search_with_moves_played(self):
         """有棋子的棋盤搜尋"""
-        model = MockGoModel(board_size=9)
         mcts = GumbelMCTS(
-            model=model,
+            evaluator=UniformEvaluator(),
             num_simulations=8,
             board_size=9
         )
@@ -288,9 +256,8 @@ class TestGumbelMCTSIntegration:
 
     def test_low_simulation_count(self):
         """低模擬次數"""
-        model = MockGoModel(board_size=9)
         mcts = GumbelMCTS(
-            model=model,
+            evaluator=UniformEvaluator(),
             num_simulations=2,  # 極低
             num_sampled_actions=4,
             board_size=9

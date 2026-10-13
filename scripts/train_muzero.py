@@ -39,6 +39,7 @@ sys.path.insert(0, str(project_root))
 from core.muzero.networks import MuZeroNetworks
 from core.muzero.trainer import MuZeroTrainer
 from core.muzero.replay_buffer import MuZeroReplayBuffer, Trajectory
+from core.evaluator import MuZeroEvaluator
 from core.game_rules import GoBoard
 from core.gumbel_mcts import GumbelMCTS
 from core.sample_store import open_sample_dataset
@@ -98,38 +99,6 @@ DEFAULT_CONFIG = {
     'output_dir': 'data/models/muzero',
     'sgf_dir': 'data/sgf/muzero_selfplay',
 }
-
-
-# ========== MuZero 到 GumbelMCTS 適配器 ==========
-
-class MuZeroModelAdapter(torch.nn.Module):
-    """將 MuZeroNetworks 適配為 GumbelMCTS 可用的接口
-
-    GumbelMCTS 期望模型的 forward 返回 (policy_logits, value)。
-    這個適配器將 MuZeroNetworks 的 representation + prediction 網路組合起來。
-    """
-
-    def __init__(self, networks: MuZeroNetworks):
-        super().__init__()
-        self.networks = networks
-
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Parameters
-        ----------
-        x : torch.Tensor
-            棋盤特徵 (batch, 2, 19, 19)
-
-        Returns
-        -------
-        Tuple[torch.Tensor, torch.Tensor]
-            (policy_logits, value)
-        """
-        # 使用 representation network 編碼
-        hidden_state = self.networks.representation(x)
-        # 使用 prediction network 得到策略和價值
-        policy_logits, value = self.networks.prediction(hidden_state)
-        return policy_logits, value
 
 
 # ========== 工具函數 ==========
@@ -407,7 +376,7 @@ def play_gumbel_game(
             adjusted_probs /= adjusted_probs.sum()
             action = int(np.random.choice(len(move_probs), p=adjusted_probs))
 
-        # 取得價值估計
+        # 取得價值估計（評估器輸出：current_player 視角）
         value = root.value_estimate if root else 0.0
 
         # 添加到軌跡
@@ -440,7 +409,8 @@ def play_gumbel_game(
         # 切換玩家
         current_player = 'w' if current_player == 'b' else 'b'
 
-    # 計算遊戲結果
+    # 計算遊戲結果：Trajectory.game_result 是「第 0 步輪走方」視角（黑先 → 黑方視角），
+    # compute_target_values 會依步數奇偶轉成每一步的輪走方視角
     score_result = board.score_chinese()
     if score_result['winner'] == 'black':
         trajectory.game_result = 1.0
@@ -501,16 +471,14 @@ def train_phase2(
         gradient_accumulation_steps=config['gradient_accumulation']
     )
 
-    # 建立 Gumbel MCTS（使用適配器）
-    adapter_model = MuZeroModelAdapter(networks)
+    # 建立 Gumbel MCTS（MuZero representation + prediction 作為盤面評估器）
     gumbel_mcts = GumbelMCTS(
-        model=adapter_model,
+        evaluator=MuZeroEvaluator(networks, device),
         board_size=config['board_size'],
         num_simulations=config['num_simulations'],
         num_sampled_actions=config.get('num_sampled_actions', 16),
         c_visit=50.0,
-        c_scale=1.0,
-        device=device
+        c_scale=1.0
     )
 
     # 恢復訓練

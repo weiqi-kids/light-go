@@ -6,6 +6,9 @@
 3. 節點緩存和重用
 4. 提前終止（訪問閾值）
 5. 減少棋盤複製
+
+價值視角慣例（與 core/mcts.py 相同）：``node.color`` 是走進該節點的一方，
+``node.q_value`` 以該方（＝父節點輪走方）視角儲存，選擇時直接取最大。
 """
 
 from __future__ import annotations
@@ -14,11 +17,14 @@ import math
 import numpy as np
 from typing import Optional, List, Tuple, Dict, Union
 from dataclasses import dataclass, field
-import torch
 from collections import defaultdict
 
+from core.evaluator import PositionEvaluator, as_evaluator
 from core.game_rules import GoBoard
-from input.lightgo_encoder import LightGoEncoder
+
+
+def _opponent(color: str) -> str:
+    return 'w' if color == 'b' else 'b'
 
 
 @dataclass
@@ -28,7 +34,7 @@ class MCTSNodeOptimized:
     board_hash: int  # 棋盤哈希（避免存儲完整棋盤）
     parent: Optional[MCTSNodeOptimized] = None
     move: Optional[Tuple[int, int]] = None
-    color: str = 'b'
+    color: str = 'b'  # 走進此節點的一方（根節點為輪走方的對手）
     prior: float = 0.0
 
     # 統計
@@ -41,8 +47,13 @@ class MCTSNodeOptimized:
     is_expanded: bool = False
 
     @property
+    def to_play(self) -> str:
+        """此節點的輪走方"""
+        return _opponent(self.color)
+
+    @property
     def q_value(self) -> float:
-        """Q 值（不受虛擬損失影響）
+        """Q 值（父節點輪走方視角，不受虛擬損失影響）
 
         Note: Q-value 只使用實際訪問次數，virtual_loss 只影響 UCB 探索項
         """
@@ -76,8 +87,8 @@ class MCTSOptimized:
 
     Parameters
     ----------
-    model : torch.nn.Module
-        神經網絡模型
+    model : torch.nn.Module | PositionEvaluator, optional
+        回傳 (policy_logits, value) 的網絡（自動包成 NetworkEvaluator），或直接傳評估器
     num_simulations : int
         模擬次數
     temperature : float
@@ -92,11 +103,13 @@ class MCTSOptimized:
         動態批次最小值
     max_batch_size : int
         動態批次最大值
+    evaluator : PositionEvaluator, optional
+        盤面評估器（優先於 model）
     """
 
     def __init__(
         self,
-        model,
+        model=None,
         num_simulations: int = 800,
         temperature: float = 1.0,
         batch_size: int = 8,
@@ -105,9 +118,11 @@ class MCTSOptimized:
         dirichlet_epsilon: float = 0.25,
         dynamic_batch: bool = True,
         min_batch_size: int = 4,
-        max_batch_size: int = 32
+        max_batch_size: int = 32,
+        evaluator: Optional[PositionEvaluator] = None,
     ):
         self.model = model
+        self.evaluator = as_evaluator(model, evaluator)
         self.num_simulations = num_simulations
         self.temperature = temperature
         self.batch_size = batch_size
@@ -122,15 +137,9 @@ class MCTSOptimized:
         self._current_batch_size = batch_size
         self._last_inference_time = 0.0
 
-        # 獲取模型設備
-        self.device = next(model.parameters()).device
-
-        # LightGo 2-plane encoder（動態創建以支持不同棋盤大小）
-        self.encoder: Optional[LightGoEncoder] = None
-
         # 緩存
         self.board_cache: Dict[int, GoBoard] = {}
-        self.evaluation_cache: Dict[int, Tuple[Dict, float]] = {}
+        self.evaluation_cache: Dict[Tuple[int, str], Tuple[Dict, float]] = {}
 
     def _get_board_hash(self, board: GoBoard) -> int:
         """獲取棋盤哈希（簡化版）"""
@@ -207,48 +216,15 @@ class MCTSOptimized:
         boards : List[GoBoard]
             棋盤列表
         colors : List[str]
-            對應的顏色
+            對應的輪走方
 
         Returns
         -------
         List[Tuple[Dict, float]]
-            (policy, value) 列表
+            (policy, value) 列表；value 為輪走方視角
         """
-        if not boards:
-            return []
-
-        # 轉換為批次輸入
-        features_batch = []
-        for board, color in zip(boards, colors):
-            features = self._board_to_features(board, color)
-            features_batch.append(features)
-
-        features_tensor = torch.cat(features_batch, dim=0)
-
-        # 批次推理
-        with torch.no_grad():
-            policy_logits, values = self.model(features_tensor)
-            policy_probs = torch.softmax(policy_logits, dim=1)
-
-        # 轉換為字典格式（包含 pass 機率）
-        results = []
-        board_size = boards[0].size
-
-        for i in range(len(boards)):
-            policy_dict = {}
-            # Board positions (0 to board_size^2 - 1)
-            for j in range(board_size * board_size):
-                row = j // board_size
-                col = j % board_size
-                policy_dict[(row, col)] = policy_probs[i, j].item()
-
-            # Pass move (index board_size^2)
-            policy_dict['pass'] = policy_probs[i, board_size * board_size].item()
-
-            value = values[i].item()
-            results.append((policy_dict, value))
-
-        return results
+        evaluations = self.evaluator.evaluate(boards, colors)
+        return [(evaluation.policy_dict(), evaluation.value) for evaluation in evaluations]
 
     def search(
         self,
@@ -274,7 +250,7 @@ class MCTSOptimized:
         """
         # 創建根節點
         board_hash = self._get_board_hash(board)
-        root = MCTSNodeOptimized(board_hash=board_hash, color=color)
+        root = MCTSNodeOptimized(board_hash=board_hash, color=_opponent(color))
 
         # 緩存根棋盤
         self.board_cache[board_hash] = board.copy()
@@ -322,7 +298,7 @@ class MCTSOptimized:
 
             # 批次評估
             boards_to_eval = [board for _, board in leaves]
-            colors_to_eval = [node.color for node, _ in leaves]
+            colors_to_eval = [node.to_play for node, _ in leaves]
 
             evaluations = self._evaluate_batch(boards_to_eval, colors_to_eval)
 
@@ -353,18 +329,18 @@ class MCTSOptimized:
         board: GoBoard,
         color: str
     ) -> Tuple[Dict[Tuple[int, int], float], float]:
-        """評估單個棋盤（帶緩存）"""
-        board_hash = self._get_board_hash(board)
+        """評估單個棋盤（帶緩存；value 依輪走方而異，所以鍵含顏色）"""
+        cache_key = (self._get_board_hash(board), color)
 
-        if board_hash in self.evaluation_cache:
-            return self.evaluation_cache[board_hash]
+        if cache_key in self.evaluation_cache:
+            return self.evaluation_cache[cache_key]
 
         # 實際評估
         results = self._evaluate_batch([board], [color])
         policy, value = results[0]
 
         # 緩存結果
-        self.evaluation_cache[board_hash] = (policy, value)
+        self.evaluation_cache[cache_key] = (policy, value)
 
         return policy, value
 
@@ -378,10 +354,8 @@ class MCTSOptimized:
         if node.is_expanded:
             return
 
-        legal_moves = board.get_legal_moves(
-            'w' if node.color == 'b' else 'b'
-        )
-        next_color = 'w' if node.color == 'b' else 'b'
+        next_color = node.to_play
+        legal_moves = board.get_legal_moves(next_color)
 
         for move in legal_moves:
             # Use uniform prior as fallback
@@ -410,7 +384,12 @@ class MCTSOptimized:
         node.is_expanded = True
 
     def _backup(self, path: List[MCTSNodeOptimized], value: float) -> None:
-        """回溯更新"""
+        """回溯更新
+
+        ``value`` 為葉節點輪走方視角；每個節點存走進該節點一方的視角，
+        所以葉節點加 -value，往上逐層變號。
+        """
+        value = -value
         for node in reversed(path):
             node.visit_count += 1
             node.total_value += value
@@ -465,23 +444,6 @@ class MCTSOptimized:
                 move_probs = visits / visits.sum()
 
         return move_probs
-
-    def _board_to_features(self, board: GoBoard, color: str) -> torch.Tensor:
-        """轉換棋盤為特徵（使用 LightGo 2-plane 編碼）
-
-        LightGo 2-plane encoding:
-        - Plane 0: Signed liberties (side to move=+, opponent=-)
-        - Plane 1: Forbidden points (occupied, suicide, ko)
-        """
-        # 動態創建 encoder 以支持不同棋盤大小
-        if self.encoder is None or self.encoder.board_size != board.size:
-            self.encoder = LightGoEncoder(board_size=board.size)
-
-        # 使用 LightGo 2-plane encoder
-        features = self.encoder.encode(board, color)
-
-        # 添加批次維度並移動到模型設備
-        return features.unsqueeze(0).to(self.device)
 
     def clear_cache(self) -> None:
         """清除緩存"""

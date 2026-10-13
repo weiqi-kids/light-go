@@ -11,20 +11,26 @@
 2. Sequential Halving 逐步淘汰較弱候選
 3. 非根節點使用確定性選擇（完成已開始的動作）
 4. 最小化簡單遺憾（Simple Regret）而非累積遺憾
+
+價值視角慣例（與 core/mcts.py 相同）：``node.color`` 是走進該節點的一方，
+``node.q_value`` 以該方（＝父節點輪走方）視角儲存；``node.value_estimate``
+則是評估器給的「該節點輪走方」視角價值。
 """
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 from typing import Optional, List, Tuple, Dict, Union
 
 import numpy as np
-import torch
 
+from core.evaluator import Evaluation, PositionEvaluator, as_evaluator
 from core.game_rules import GoBoard
 from core.sequential_halving import sequential_halving
-from input.lightgo_encoder import LightGoEncoder
+
+
+def _opponent(color: str) -> str:
+    return 'w' if color == 'b' else 'b'
 
 
 @dataclass
@@ -40,7 +46,7 @@ class GumbelMCTSNode:
     move : Optional[Tuple[int, int]]
         到達此節點的動作
     color : str
-        剛下完棋的顏色 ('b' or 'w')
+        剛下完棋的顏色 ('b' or 'w')；根節點為輪走方的對手
     prior : float
         神經網路先驗機率
     gumbel_value : float
@@ -62,11 +68,16 @@ class GumbelMCTSNode:
         self.children: Dict[Union[Tuple[int, int], str], GumbelMCTSNode] = {}
         self.visit_count: int = 0
         self.total_value: float = 0.0
-        self.value_estimate: float = 0.0  # 神經網路價值估計
+        self.value_estimate: float = 0.0  # 評估器價值（本節點輪走方視角）
+
+    @property
+    def to_play(self) -> str:
+        """此節點的輪走方"""
+        return _opponent(self.color)
 
     @property
     def q_value(self) -> float:
-        """平均動作價值 (Q)"""
+        """平均動作價值 (Q)，父節點輪走方（＝ self.color）視角"""
         if self.visit_count == 0:
             return 0.0
         return self.total_value / self.visit_count
@@ -97,12 +108,12 @@ class GumbelMCTSNode:
         policy : Dict
             策略機率分布
         value : float
-            價值估計
+            價值估計（本節點輪走方視角）
         """
         self.value_estimate = value
 
         # 下一個玩家
-        next_color = 'w' if self.color == 'b' else 'b'
+        next_color = self.to_play
 
         # 取得合法動作
         legal_moves = self.board.get_legal_moves(next_color)
@@ -143,8 +154,8 @@ class GumbelMCTS:
 
     Parameters
     ----------
-    model : torch.nn.Module
-        神經網路模型（策略 + 價值）
+    model : torch.nn.Module | PositionEvaluator, optional
+        回傳 (policy_logits, value) 的網路（自動包成 NetworkEvaluator），或直接傳評估器
     num_simulations : int
         每次搜尋的模擬次數（預設 16，可低至 2）
     num_sampled_actions : int
@@ -155,29 +166,30 @@ class GumbelMCTS:
         Q 值縮放係數（預設 1.0）
     board_size : int
         棋盤大小
+    evaluator : PositionEvaluator, optional
+        盤面評估器（優先於 model）
+    device : optional
+        包裝 model 時使用的推論裝置（預設為模型參數所在裝置）
     """
 
     def __init__(
         self,
-        model,
+        model=None,
         num_simulations: int = 16,
         num_sampled_actions: int = 16,
         c_visit: float = 50.0,
         c_scale: float = 1.0,
-        board_size: int = 19
+        board_size: int = 19,
+        evaluator: Optional[PositionEvaluator] = None,
+        device=None,
     ):
         self.model = model
+        self.evaluator = as_evaluator(model, evaluator, device)
         self.num_simulations = num_simulations
         self.num_sampled_actions = num_sampled_actions
         self.c_visit = c_visit
         self.c_scale = c_scale
         self.board_size = board_size
-
-        # 取得模型設備
-        self.device = next(model.parameters()).device
-
-        # LightGo 2-plane encoder
-        self.encoder = LightGoEncoder(board_size=board_size)
 
     def search(
         self,
@@ -199,15 +211,16 @@ class GumbelMCTS:
             - 動作機率分布 (board_size^2 + 1)
             - 搜尋樹根節點
         """
-        # 建立根節點
+        # 建立根節點（color = 走進根節點的一方 = 輪走方的對手）
         root = GumbelMCTSNode(
             board=board.copy(),
-            color=color,
+            color=_opponent(color),
             is_root=True
         )
 
-        # Step 1: 取得神經網路策略和價值
-        policy_logits, policy_dict, value = self._evaluate(board, color)
+        # Step 1: 取得策略和價值（輪走方視角）
+        evaluation = self._evaluate(board, color)
+        policy_logits, policy_dict, value = evaluation.logits, evaluation.policy_dict(), evaluation.value
 
         # 儲存價值估計
         root.value_estimate = value
@@ -229,15 +242,11 @@ class GumbelMCTS:
             """評估單個動作"""
             move = self._idx_to_move(action_idx)
 
-            if move not in root.children:
-                return root.value_estimate
+            if move in root.children:
+                # 執行一次模擬
+                self._simulate(root.children[move])
 
-            child = root.children[move]
-
-            # 執行一次模擬
-            self._simulate(child)
-
-            # 回傳已完成 Q 值
+            # 回傳已完成 Q 值（根節點輪走方視角）
             return self._completed_q_value(root, move)
 
         # 執行 Sequential Halving
@@ -252,47 +261,9 @@ class GumbelMCTS:
 
         return move_probs, root
 
-    def _evaluate(
-        self,
-        board: GoBoard,
-        color: str
-    ) -> Tuple[np.ndarray, Dict[Union[Tuple[int, int], str], float], float]:
-        """評估局面
-
-        Returns
-        -------
-        Tuple[np.ndarray, Dict, float]
-            - 策略 logits (board_size^2 + 1)
-            - 策略字典 {move: probability}
-            - 價值估計
-        """
-        # 編碼棋盤
-        if board.size != self.encoder.board_size:
-            self.encoder = LightGoEncoder(board_size=board.size)
-
-        features = self.encoder.encode(board, color)
-        features_tensor = features.unsqueeze(0).to(self.device)
-
-        # 神經網路推理
-        with torch.no_grad():
-            policy_logits_tensor, value_tensor = self.model(features_tensor)
-            policy_logits = policy_logits_tensor[0].cpu().numpy()
-            policy_probs = torch.softmax(policy_logits_tensor, dim=1)[0].cpu().numpy()
-
-        # 建立策略字典
-        policy_dict: Dict[Union[Tuple[int, int], str], float] = {}
-        board_size = board.size
-
-        for i in range(board_size * board_size):
-            row = i // board_size
-            col = i % board_size
-            policy_dict[(row, col)] = float(policy_probs[i])
-
-        policy_dict['pass'] = float(policy_probs[board_size * board_size])
-
-        value = float(value_tensor[0].item())
-
-        return policy_logits, policy_dict, value
+    def _evaluate(self, board: GoBoard, color: str) -> Evaluation:
+        """評估局面（``color`` 為輪走方；value 為其視角）"""
+        return self.evaluator.evaluate_one(board, color)
 
     def _gumbel_top_k(
         self,
@@ -368,12 +339,12 @@ class GumbelMCTS:
         float
             模擬結果價值
         """
-        # 如果是葉節點，評估並擴展
+        # 如果是葉節點，評估並擴展（value 為 node.to_play 視角）
         if node.is_leaf():
-            _, policy_dict, value = self._evaluate(node.board, node.color)
-            node.expand(policy_dict, value)
-            self._backup(node, value)
-            return value
+            evaluation = self._evaluate(node.board, node.to_play)
+            node.expand(evaluation.policy_dict(), evaluation.value)
+            self._backup(node, evaluation.value)
+            return evaluation.value
 
         # 非葉節點：確定性選擇
         if node.children:
@@ -392,8 +363,10 @@ class GumbelMCTS:
         node : GumbelMCTSNode
             葉節點
         value : float
-            價值估計
+            價值估計（葉節點輪走方視角）
         """
+        # 每個節點存走進該節點一方的視角：葉節點存 -value，往上逐層變號
+        value = -value
         current = node
 
         while current is not None:
@@ -406,9 +379,14 @@ class GumbelMCTS:
         node: GumbelMCTSNode,
         move: Union[Tuple[int, int], str]
     ) -> float:
-        """計算「已完成」Q 值
+        """計算「已完成」Q 值（父節點輪走方視角）
 
-        包含未訪問懲罰，用於 Sequential Halving 的動作比較。
+        已訪問的動作用 child.q_value（已是父節點輪走方視角）；未訪問的動作用
+        父節點自己的價值估計補上（Danihelka et al. 2022 的 completed Q）。
+        論文的 σ(q̂) = (c_visit + max_b N(b)) · c_scale · q̂ 在同一次比較中對所有
+        動作是同一個正倍數，排序等價於 q̂；但 Sequential Halving 是逐次呼叫、
+        max_b N(b) 會隨呼叫順序變動，乘上去會讓評估順序影響排名，
+        所以這裡只回傳 c_scale · q̂。
 
         Parameters
         ----------
@@ -420,23 +398,17 @@ class GumbelMCTS:
         Returns
         -------
         float
-            已完成 Q 值
+            c_scale · 已完成 Q 值
         """
         child = node.children.get(move)
 
         if child is None or child.visit_count == 0:
-            # 未訪問：使用價值估計
-            return node.value_estimate
-
-        # 已訪問：Q 值 + 未訪問懲罰
-        if node.visit_count > 0 and child.visit_count > 0:
-            penalty = self.c_visit * math.sqrt(
-                math.log(node.visit_count + 1) / child.visit_count
-            )
+            # 未訪問：父節點價值估計（與 child.q_value 同為父節點輪走方視角）
+            completed_q = node.value_estimate
         else:
-            penalty = 0.0
+            completed_q = child.q_value
 
-        return child.q_value * self.c_scale - penalty
+        return self.c_scale * completed_q
 
     def _idx_to_move(self, idx: int) -> Union[Tuple[int, int], str]:
         """將索引轉換為動作"""
@@ -484,9 +456,13 @@ class GumbelMCTS:
             move_probs[best_action_idx] = 1.0
         else:
             # 按訪問次數分配機率
+            visits = np.zeros(self.board_size ** 2 + 1, dtype=np.float32)
             for move, child in root.children.items():
-                idx = self._move_to_idx(move)
-                move_probs[idx] = child.visit_count / total_visits
+                visits[self._move_to_idx(move)] = child.visit_count
+            # Sequential Halving 最後一輪的勝者與次佳者訪問數相同；
+            # 讓推薦動作嚴格最多，argmax 才會等於 best_action
+            visits[best_action_idx] = visits.max() + 1
+            move_probs = visits / visits.sum()
 
         return move_probs
 

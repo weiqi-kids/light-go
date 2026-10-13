@@ -1,9 +1,18 @@
 """Monte Carlo Tree Search (MCTS) implementation for Go.
 
 This module implements AlphaGo Zero style MCTS that combines:
-- Neural network policy and value predictions
+- Policy and value predictions from a :class:`~core.evaluator.PositionEvaluator`
 - UCB (Upper Confidence Bound) for exploration
 - Dirichlet noise for root exploration
+
+Value perspective convention
+----------------------------
+``node.color`` is the colour that just moved into the node, and
+``node.q_value`` is stored from **that** player's perspective (i.e. the
+parent's side to move). Selection therefore maximises ``child.q_value``
+directly. Evaluator values are side-to-move perspective, so a leaf evaluated
+at value ``v`` (for ``node.to_play``) is backed up as ``-v`` into the leaf and
+alternates sign on the way up.
 """
 
 from __future__ import annotations
@@ -12,10 +21,13 @@ import math
 import numpy as np
 from typing import Optional, List, Tuple, Dict, Union
 from dataclasses import dataclass
-import torch
 
+from core.evaluator import PositionEvaluator, as_evaluator
 from core.game_rules import GoBoard
-from input.lightgo_encoder import LightGoEncoder
+
+
+def _opponent(color: str) -> str:
+    return 'w' if color == 'b' else 'b'
 
 
 @dataclass
@@ -31,7 +43,8 @@ class MCTSNode:
     move : Optional[Tuple[int, int]]
         Move that led to this node
     color : str
-        Color that just moved ('b' or 'w')
+        Color that just moved ('b' or 'w'); the root uses the opponent of
+        the side to move
     prior : float
         Prior probability from neural network
     children : Dict[Tuple[int, int], MCTSNode]
@@ -39,7 +52,7 @@ class MCTSNode:
     visit_count : int
         Number of times this node was visited
     total_value : float
-        Sum of value estimates from simulations
+        Sum of value estimates from simulations, from ``color``'s perspective
     """
 
     board: GoBoard
@@ -55,8 +68,13 @@ class MCTSNode:
         self.total_value: float = 0.0
 
     @property
+    def to_play(self) -> str:
+        """Colour to move at this node."""
+        return _opponent(self.color)
+
+    @property
     def q_value(self) -> float:
-        """Average action value (Q).
+        """Average action value (Q) from the parent's side-to-move perspective.
 
         Returns
         -------
@@ -135,11 +153,8 @@ class MCTSNode:
         policy : Dict[Tuple[int, int], float]
             Policy probabilities from neural network
         """
-        legal_moves = self.board.get_legal_moves(
-            'b' if self.color == 'w' else 'w'  # Opponent's turn
-        )
-
-        next_color = 'w' if self.color == 'b' else 'b'
+        next_color = self.to_play
+        legal_moves = self.board.get_legal_moves(next_color)
 
         for move in legal_moves:
             if move in self.children:
@@ -171,7 +186,7 @@ class MCTSNode:
         Parameters
         ----------
         value : float
-            Value estimate from simulation (-1 to 1)
+            Value estimate (-1 to 1) from ``self.color``'s perspective
         """
         self.visit_count += 1
         self.total_value += value
@@ -182,8 +197,9 @@ class MCTS:
 
     Parameters
     ----------
-    model : torch.nn.Module
-        Neural network model for policy and value prediction
+    model : torch.nn.Module | PositionEvaluator, optional
+        Network returning ``(policy_logits, value)`` (wrapped in a
+        :class:`~core.evaluator.NetworkEvaluator`), or an evaluator directly
     num_simulations : int
         Number of simulations per search (default 800)
     temperature : float
@@ -197,20 +213,24 @@ class MCTS:
     max_tree_nodes : int
         Maximum number of nodes to keep in cached tree (default 100000)
         When exceeded, less visited branches are pruned
+    evaluator : PositionEvaluator, optional
+        Position evaluator (takes precedence over ``model``)
     """
 
     def __init__(
         self,
-        model,
+        model=None,
         num_simulations: int = 800,
         temperature: float = 1.0,
         dirichlet_alpha: float = 0.03,
         dirichlet_epsilon: float = 0.25,
         board_size: int = 19,
         reuse_tree: bool = True,
-        max_tree_nodes: int = 100000
+        max_tree_nodes: int = 100000,
+        evaluator: Optional[PositionEvaluator] = None,
     ):
         self.model = model
+        self.evaluator = as_evaluator(model, evaluator)
         self.num_simulations = num_simulations
         self.temperature = temperature
         self.dirichlet_alpha = dirichlet_alpha
@@ -218,12 +238,6 @@ class MCTS:
         self.board_size = board_size
         self.reuse_tree = reuse_tree
         self.max_tree_nodes = max_tree_nodes
-
-        # 獲取模型設備
-        self.device = next(model.parameters()).device
-
-        # LightGo 2-plane encoder
-        self.encoder = LightGoEncoder(board_size=board_size)
 
         # Tree reuse: 緩存上一次搜索的根節點
         self._cached_root: Optional[MCTSNode] = None
@@ -249,12 +263,12 @@ class MCTS:
         if self.reuse_tree and self._cached_root is not None:
             root = self._cached_root
             # 驗證緩存的樹是否匹配當前棋盤（簡單檢查顏色）
-            if root.color != color:
+            if root.to_play != color:
                 root = None  # 顏色不匹配，需要新建
 
         # 如果沒有緩存或緩存無效，創建新的根節點
         if root is None:
-            root = MCTSNode(board=board.copy(), color=color)
+            root = MCTSNode(board=board.copy(), color=_opponent(color))
 
             # Get initial policy from neural network
             policy, _ = self._evaluate(root.board, color)
@@ -284,13 +298,13 @@ class MCTS:
             while not node.is_leaf():
                 node = node.select_child()
 
-            # Expansion & Evaluation
+            # Expansion & Evaluation (value is node.to_play's perspective)
             if node.visit_count == 0:
                 # First visit: get value from network
-                _, value = self._evaluate(node.board, node.color)
+                _, value = self._evaluate(node.board, node.to_play)
             else:
                 # Expand and evaluate
-                policy, value = self._evaluate(node.board, node.color)
+                policy, value = self._evaluate(node.board, node.to_play)
                 node.expand(policy)
 
             # Backup: propagate value up the tree
@@ -440,81 +454,23 @@ class MCTS:
         board: GoBoard,
         color: str
     ) -> Tuple[Dict[Union[Tuple[int, int], str], float], float]:
-        """Evaluate position using neural network.
+        """Evaluate position with the position evaluator.
 
         Parameters
         ----------
         board : GoBoard
             Board state to evaluate
         color : str
-            Current player color
+            Side to move
 
         Returns
         -------
         Tuple[Dict[Union[Tuple[int, int], str], float], float]
             - Policy dictionary: {(row, col): probability, 'pass': probability}
-            - Value estimate (-1 to 1)
+            - Value estimate (-1 to 1) from ``color``'s perspective
         """
-        # Convert board to neural network input
-        features = self._board_to_features(board, color)
-
-        # Get network predictions
-        with torch.no_grad():
-            policy_logits, value = self.model(features)
-
-            # Apply softmax to policy
-            policy_probs = torch.softmax(policy_logits, dim=1)[0]
-
-        # Convert policy to dictionary (include all 362 outputs)
-        board_size = board.size
-        policy_dict = {}
-
-        # Board positions (0 to board_size^2 - 1)
-        for i in range(board_size * board_size):
-            row = i // board_size
-            col = i % board_size
-            policy_dict[(row, col)] = policy_probs[i].item()
-
-        # Pass move (index board_size^2)
-        policy_dict['pass'] = policy_probs[board_size * board_size].item()
-
-        # Extract value
-        value_estimate = value[0].item()
-
-        return policy_dict, value_estimate
-
-    def _board_to_features(self, board: GoBoard, color: str) -> torch.Tensor:
-        """Convert board to neural network input features using LightGo 2-plane encoding.
-
-        Parameters
-        ----------
-        board : GoBoard
-            Board state
-        color : str
-            Current player color
-
-        Returns
-        -------
-        torch.Tensor
-            Feature tensor (1, 2, board_size, board_size)
-
-        Notes
-        -----
-        LightGo 2-plane encoding:
-        - Plane 0: Signed liberties (side to move=+, opponent=-)
-        - Plane 1: Forbidden points (occupied, suicide, ko)
-        """
-        # Create encoder with correct board size if needed
-        if board.size != self.encoder.board_size:
-            self.encoder = LightGoEncoder(board_size=board.size)
-
-        # Use LightGo 2-plane encoder
-        features = self.encoder.encode(board, color)
-
-        # Add batch dimension and move to device
-        features_tensor = features.unsqueeze(0).to(self.device)
-
-        return features_tensor
+        evaluation = self.evaluator.evaluate_one(board, color)
+        return evaluation.policy_dict(), evaluation.value
 
     def _add_dirichlet_noise(
         self,
@@ -560,12 +516,13 @@ class MCTS:
         node : MCTSNode
             Leaf node to start backup from
         value : float
-            Value estimate
+            Value estimate from ``node.to_play``'s perspective
         """
+        # 每個節點存「走進該節點那一方」的視角：葉節點存 -value，往上逐層變號
+        value = -value
         current = node
 
         while current is not None:
-            # Alternate value sign (opponent's perspective)
             current.update(value)
             value = -value
             current = current.parent

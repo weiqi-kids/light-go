@@ -19,6 +19,7 @@ import torch
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+from core.evaluator import UniformEvaluator
 from core.game_rules import GoBoard
 from core.mcts import MCTS, MCTSNode
 from core.mcts_optimized import MCTSOptimized
@@ -248,14 +249,8 @@ class TestEdgeCases(unittest.TestCase):
     """測試邊界情況"""
 
     def setUp(self):
-        """設置測試環境"""
-        self.model = GoAIModel(
-            num_input_planes=2,
-            num_filters=32,
-            num_blocks=2,
-            board_size=9
-        )
-        self.model.eval()
+        """設置測試環境（搜尋行為不依賴網路，用均勻評估器）"""
+        self.model = UniformEvaluator()
 
     def test_empty_board(self):
         """測試空棋盤"""
@@ -308,13 +303,6 @@ class TestValueBackup(unittest.TestCase):
     def setUp(self):
         """設置測試環境"""
         self.board = GoBoard(size=9)
-        self.model = GoAIModel(
-            num_input_planes=2,
-            num_filters=32,
-            num_blocks=2,
-            board_size=9
-        )
-        self.model.eval()
 
     def test_value_propagation(self):
         """測試 value 向上傳播"""
@@ -347,7 +335,6 @@ def run_tests():
 
     # 添加所有測試類
     suite.addTests(loader.loadTestsFromTestCase(TestUCBCalculation))
-    suite.addTests(loader.loadTestsFromTestCase(TestVirtualLoss))
     suite.addTests(loader.loadTestsFromTestCase(TestSearchTreeProperties))
     suite.addTests(loader.loadTestsFromTestCase(TestOptimizedMCTS))
     suite.addTests(loader.loadTestsFromTestCase(TestEdgeCases))

@@ -26,9 +26,15 @@ class Trajectory:
     policies : List[np.ndarray]
         每一步 MCTS 產生的策略
     values : List[float]
-        每一步的價值估計
+        每一步的價值估計（該步輪走方視角）
     game_result : float
-        遊戲結果 (+1 勝, -1 負, 0 平)
+        遊戲結果，**第 0 步輪走方視角**（+1 勝, -1 負, 0 平）；
+        圍棋自我對弈由黑先，所以就是黑方視角
+
+    Notes
+    -----
+    兩人輪流落子（pass 也算一步），第 i 步的輪走方與第 0 步相同當且僅當 i 為偶數。
+    :meth:`compute_target_values` 會把所有價值目標轉成每一步的輪走方視角。
     """
 
     observations: List[np.ndarray] = field(default_factory=list)
@@ -73,7 +79,7 @@ class Trajectory:
         Returns
         -------
         List[float]
-            每一步的目標價值
+            每一步的目標價值（該步輪走方視角）
         """
         n = len(self)
         target_values = []
@@ -83,18 +89,19 @@ class Trajectory:
             bootstrap_idx = min(i + td_steps, n - 1)
 
             if bootstrap_idx < n - 1:
-                # 使用 MCTS 價值估計
-                bootstrap_value = self.values[bootstrap_idx]
+                # 使用 MCTS 價值估計（第 i+td_steps 步輪走方視角 → 第 i 步）
+                bootstrap_value = self.values[bootstrap_idx] * (-1) ** td_steps
             else:
-                # 使用遊戲結果
-                bootstrap_value = self.game_result
+                # 使用遊戲結果（第 0 步輪走方視角 → 第 i 步）
+                bootstrap_value = self.game_result * (-1) ** i
 
             # 累積折扣獎勵
             value = bootstrap_value * (discount ** td_steps)
 
             for j in range(min(td_steps, n - i)):
+                # 第 i+j 步的獎勵屬於該步落子方 → 換成第 i 步輪走方視角
                 reward = self.rewards[i + j] if i + j < len(self.rewards) else 0.0
-                value += reward * (discount ** j)
+                value += reward * (-1) ** j * (discount ** j)
 
             target_values.append(value)
 

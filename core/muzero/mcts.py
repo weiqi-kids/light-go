@@ -3,6 +3,10 @@
 在隱藏狀態空間執行 MCTS 搜尋。
 與傳統 MCTS 不同，MuZero MCTS 使用學習的動態模型來模擬狀態轉移，
 而不是使用真實的遊戲規則。
+
+價值視角慣例（兩人交替）：網路輸出的 value 是「該隱藏狀態輪走方」視角；
+每個節點的 ``q_value`` 存「走進該節點一方」（＝父節點輪走方）的視角，
+選擇時取 ``reward + discount * child.q_value`` 最大者；backup 逐層變號。
 """
 
 from __future__ import annotations
@@ -52,7 +56,7 @@ class MuZeroNode:
 
     @property
     def q_value(self) -> float:
-        """平均動作價值"""
+        """平均價值（走進此節點一方＝父節點輪走方的視角）"""
         if self.visit_count == 0:
             return 0.0
         return self.value_sum / self.visit_count
@@ -78,13 +82,15 @@ class MuZeroNode:
                     action=action
                 )
 
-    def select_child(self, c_puct: float = 1.4) -> Tuple[int, 'MuZeroNode']:
-        """使用 UCB 選擇子節點
+    def select_child(self, c_puct: float = 1.4, discount: float = 1.0) -> Tuple[int, 'MuZeroNode']:
+        """使用 UCB 選擇子節點（最大化本節點輪走方的價值）
 
         Parameters
         ----------
         c_puct : float
             探索常數
+        discount : float
+            折扣因子，Q(s, a) = reward + discount * child.q_value
 
         Returns
         -------
@@ -102,7 +108,8 @@ class MuZeroNode:
         for action, child in self.children.items():
             prior = self.prior[action] if self.prior is not None else 1.0 / len(self.children)
             u_value = c_puct * prior * math.sqrt(parent_visits) / (1 + child.visit_count)
-            score = child.q_value + u_value
+            q_value = child.reward + discount * child.q_value if child.visit_count > 0 else 0.0
+            score = q_value + u_value
             scores.append(score)
             actions.append(action)
             children.append(child)
@@ -216,7 +223,7 @@ class MuZeroMCTS:
 
             # Selection: 選擇到葉節點
             while node.is_expanded() and node.hidden_state is not None:
-                action, child = node.select_child(self.c_puct)
+                action, child = node.select_child(self.c_puct, self.discount)
                 search_path.append(child)
                 node = child
 
@@ -255,12 +262,13 @@ class MuZeroMCTS:
         search_path : List[MuZeroNode]
             搜尋路徑
         value : float
-            葉節點價值
+            葉節點價值（葉節點輪走方視角）
         """
         for node in reversed(search_path):
-            node.update(value)
-            # 折扣 + 獎勵
-            value = node.reward + self.discount * value
+            # 節點存走進該節點一方的視角 = -(本節點輪走方視角)
+            node.update(-value)
+            # 換成父節點輪走方視角：reward 屬於走進本節點的一方，後續價值變號
+            value = node.reward - self.discount * value
 
     def _get_policy(self, root: MuZeroNode, temperature: float = 1.0) -> np.ndarray:
         """從訪問次數計算策略
